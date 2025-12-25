@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.riva_frontend">
+
+    <application
+        android:label="riva_frontend"
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- ... other config ... -->
+    </application>
+
+</manifest>
