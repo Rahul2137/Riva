@@ -1,17 +1,15 @@
-import pyttsx3
-import speech_recognition as sr
+"""
+Assistant module - Request classification and routing.
+TTS/STT is handled by frontend - this module only does request classification.
+"""
 from openai import OpenAI
 import os
-import json
-import asyncio
 from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List
 from .finance_manager import FinanceManager
 from .task_manager import TaskManager
 from .conversational_manager import ConversationManager
-from .db import get_user_context, get_user_data_by_fields  # you'll implement these
-from .gptDataRequest import get_relevant_fields
 
 # Load API Key
 load_dotenv()
@@ -25,25 +23,6 @@ class BaseRequest(BaseModel):
 
 class UserRequest(BaseModel):
     requests: List[BaseRequest]
-
-def speak(text):
-    """Converts text to speech."""
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
-
-def listen():
-    """Listens to the user's voice input and converts it to text."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Listening...")
-        try:
-            audio = recognizer.listen(source)
-            return recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            return "Sorry, I didn't catch that."
-        except sr.RequestError:
-            return "Service unavailable."
 
 def classify_user_request(user_input):
     """Calls ChatGPT to classify the user's request using the structured response model."""

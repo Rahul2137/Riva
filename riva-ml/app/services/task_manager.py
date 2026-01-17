@@ -1,10 +1,12 @@
+"""
+Task Manager - Handles task scheduling and productivity features.
+TTS/STT is handled by frontend.
+"""
 import pickle
 import os
 from datetime import datetime, timedelta
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-import pyttsx3
-import speech_recognition as sr
 from openai import OpenAI
 import json
 import pytz
@@ -171,39 +173,3 @@ class TaskManager:
         else:
             return "Error updating schedule."
 
-def speak(text):
-    """Converts text to speech."""
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
-
-def listen():
-    """Listens to the user's voice input and converts it to text."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Listening...")
-        try:
-            audio = recognizer.listen(source)
-            return recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            return "Sorry, I didn't catch that."
-        except sr.RequestError:
-            return "Service unavailable."
-
-if __name__ == "__main__":
-    manager = TaskManager()
-    speak("Hello! How can I assist you today?")
-    
-    while True:
-        user_input = listen()
-        if user_input.lower() in ["exit", "quit", "bye"]:
-            speak("Goodbye!")
-            break
-        elif user_input == "Sorry, I didn't catch that.":
-            speak("Sorry, I didn't catch that. Can you repeat?")
-            continue
-        
-        print(f"You: {user_input}")
-        response = manager.process_request(client, user_input)
-        print(f"Response to user: {response}")
-        speak(response)
