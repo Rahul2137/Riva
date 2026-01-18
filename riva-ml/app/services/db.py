@@ -96,11 +96,22 @@ async def get_transactions(
     query = {"user_id": user_id}
     
     if start_date or end_date:
-        query["date"] = {}
+        # Query both date (string) and created_at (datetime) fields
+        date_filter = {}
+        created_at_filter = {}
+        
         if start_date:
-            query["date"]["$gte"] = start_date
+            date_filter["$gte"] = start_date.strftime("%Y-%m-%d")
+            created_at_filter["$gte"] = start_date
         if end_date:
-            query["date"]["$lte"] = end_date
+            date_filter["$lte"] = end_date.strftime("%Y-%m-%d")
+            created_at_filter["$lte"] = end_date
+        
+        # Match either date field (string) or created_at (datetime)
+        query["$or"] = [
+            {"date": date_filter},
+            {"created_at": created_at_filter}
+        ]
     
     if category:
         query["category"] = category.lower()
@@ -108,7 +119,7 @@ async def get_transactions(
     if transaction_type:
         query["type"] = transaction_type
     
-    cursor = transactions_collection.find(query).sort("date", -1).limit(limit)
+    cursor = transactions_collection.find(query).sort("created_at", -1).limit(limit)
     transactions = await cursor.to_list(length=limit)
     
     # Convert ObjectId to string for JSON serialization
