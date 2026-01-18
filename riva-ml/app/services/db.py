@@ -140,12 +140,15 @@ async def get_spending_summary(
     if not end_date:
         end_date = datetime.utcnow()
     
-    # Aggregation pipeline for summary
+    # Aggregation pipeline for summary - match both date formats
     pipeline = [
         {
             "$match": {
                 "user_id": user_id,
-                "date": {"$gte": start_date, "$lte": end_date}
+                "$or": [
+                    {"date": {"$gte": start_date.strftime("%Y-%m-%d"), "$lte": end_date.strftime("%Y-%m-%d")}},
+                    {"created_at": {"$gte": start_date, "$lte": end_date}}
+                ]
             }
         },
         {
