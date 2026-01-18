@@ -23,6 +23,11 @@ transactions_collection = db["transactions"]
 budgets_collection = db["budgets"]
 financial_goals_collection = db["financial_goals"]
 
+# Memory System Collections
+user_memory_collection = db["user_memory"]          # Facts, preferences, habits
+conversation_summary_collection = db["conversation_summary"]  # Compressed chat history
+action_log_collection = db["action_log"]            # Audit trail
+
 
 # ----------------------------
 # User Context Functions

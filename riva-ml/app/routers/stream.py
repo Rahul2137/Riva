@@ -75,12 +75,46 @@ def init_stt_provider():
 
 
 async def process_user_request(user_input: str, openai_client, user_id: str = None) -> str:
-    """Process user input through the assistant and return response."""
+    """Process user input through the orchestrator and return response."""
     import asyncio
+    
+    # Feature flag - set to True to use new memory/orchestrator system
+    USE_NEW_ORCHESTRATOR = True
     
     if not openai_client:
         return "OpenAI API key not configured. Please set OPENAI_API_KEY."
     
+    # ----------------------------
+    # NEW: Orchestrator-based processing
+    # ----------------------------
+    if USE_NEW_ORCHESTRATOR and user_id:
+        try:
+            from services.orchestrator import Orchestrator
+            from services.memory_service import MemoryService
+            from services.db import user_memory_collection, transactions_collection
+            
+            # Initialize services
+            memory_service = MemoryService(user_memory_collection)
+            orchestrator = Orchestrator(
+                memory_service=memory_service,
+                openai_client=openai_client,
+                transactions_collection=transactions_collection
+            )
+            
+            # Process through orchestrator
+            result = await orchestrator.process_request(user_id, user_input)
+            
+            print(f"[ORCHESTRATOR] Intent: {result.get('intent')}, Action: {result.get('action_taken')}")
+            
+            return result.get("response", "I encountered an issue processing that.")
+        except Exception as e:
+            print(f"[ORCHESTRATOR ERROR] {e}")
+            traceback.print_exc()
+            # Fall through to old system
+    
+    # ----------------------------
+    # LEGACY: Old classification system (fallback)
+    # ----------------------------
     try:
         loop = asyncio.get_event_loop()
         response_data = await loop.run_in_executor(None, classify_user_request, user_input)
