@@ -69,14 +69,14 @@ User → Frontend App → Backend API → AI Processing → Task Execution → E
 ---
 
 ## 📸 Demo / Screenshots
+<img width="624" height="1280" alt="image" src="https://github.com/user-attachments/assets/20c8e2bd-1942-4795-91c4-d0237546b245" />
 
-### Voice Interaction
-![Voice](./assets/screen1.png)
+<img width="624" height="1280" alt="image" src="https://github.com/user-attachments/assets/23de34c3-cc22-497f-9d5d-4cd10e197db4" />
 
-### Task Execution
-![Task](./assets/screen2.png)
+<img width="624" height="1280" alt="image" src="https://github.com/user-attachments/assets/ab8ac342-6635-4266-9665-647b2e1d16bc" />
 
----
+<img width="624" height="1280" alt="image" src="https://github.com/user-attachments/assets/6cb9eb88-9aa3-4556-ad4d-fc14f619db84" />
+
 
 ## ⚙️ Setup Instructions
 
