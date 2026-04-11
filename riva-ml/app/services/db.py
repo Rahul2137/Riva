@@ -28,6 +28,9 @@ user_memory_collection = db["user_memory"]          # Facts, preferences, habits
 conversation_summary_collection = db["conversation_summary"]  # Compressed chat history
 action_log_collection = db["action_log"]            # Audit trail
 
+# Calendar System Collections
+calendar_tokens_collection = db["calendar_tokens"]   # Per-user Google OAuth tokens
+
 
 # ----------------------------
 # User Context Functions

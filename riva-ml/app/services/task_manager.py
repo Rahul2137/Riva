@@ -46,7 +46,11 @@ def authenticate_user():
     Try local-server OAuth first. If binding to a local port fails (PermissionError,
     OSError) fall back to a dynamic port or to console-based auth.
     """
-    flow = InstalledAppFlow.from_client_secrets_file("C:/Users/rkrau/OneDrive/Desktop/Riva_final/riva-ml/riva-ml/app/services/client_secret.json", SCOPES, redirect_uri="http://localhost:8000/")
+    flow = InstalledAppFlow.from_client_secrets_file(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client_secret.json"),
+        SCOPES,
+        redirect_uri="http://localhost:8000/"
+    )
     creds = None
 
     # 1) Preferred: bind to localhost on a fixed port

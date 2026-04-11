@@ -1,6 +1,8 @@
 """
 Audio Streaming Router
 Handles WebSocket for real-time voice processing.
+
+v2: Uses agent-based Orchestrator exclusively (legacy path removed).
 """
 import os
 import traceback
@@ -8,10 +10,6 @@ import numpy as np
 from fastapi import APIRouter, WebSocket
 
 from providers import create_stt_provider, STTProviderType
-from services.assistant import classify_user_request
-from services.finance_manager import FinanceManager
-from services.task_manager import TaskManager
-from services.conversational_manager import ConversationManager
 
 router = APIRouter(tags=["Voice Stream"])
 
@@ -20,7 +18,7 @@ SAMPLERATE = 16000
 CHANNELS = 1
 BYTES_PER_SAMPLE = 2
 SILENCE_THRESHOLD = 100
-SILENCE_DURATION_MS = 800  # Reduced from 1500 for faster response
+SILENCE_DURATION_MS = 800
 CHUNK_MS = 200
 
 # STT Provider Config - Change this ONE value to switch providers
@@ -34,26 +32,26 @@ stt_provider = None
 def init_stt_provider():
     """Initialize STT provider based on STT_PROVIDER env variable."""
     global stt_provider
-    
+
     # Map string to enum
     provider_map = {
         "google": STTProviderType.GOOGLE,
         "vosk": STTProviderType.VOSK,
         "openai": STTProviderType.OPENAI_WHISPER,
     }
-    
+
     selected = STT_PROVIDER.lower()
     print(f"[INFO] STT_PROVIDER configured: {selected}")
-    
+
     if selected not in provider_map:
         print(f"[WARNING] Unknown STT_PROVIDER '{selected}', using google")
         selected = "google"
-    
+
     try:
         stt_provider = create_stt_provider(
             provider_type=provider_map[selected],
             sample_rate=SAMPLERATE,
-            api_key=os.getenv("OPENAI_API_KEY") if selected == "openai" else None
+            api_key=os.getenv("OPENAI_API_KEY") if selected == "openai" else None,
         )
         print(f"[OK] STT provider initialized: {stt_provider.provider_type.value}")
     except Exception as e:
@@ -64,95 +62,95 @@ def init_stt_provider():
             try:
                 stt_provider = create_stt_provider(
                     provider_type=provider_map[fallback],
-                    sample_rate=SAMPLERATE
+                    sample_rate=SAMPLERATE,
                 )
                 print(f"[OK] Fallback to {fallback} STT")
                 return
-            except:
+            except Exception:
                 continue
         print("[ERROR] No STT provider available")
         stt_provider = None
 
 
-async def process_user_request(user_input: str, openai_client, user_id: str = None) -> str:
+# ---------------------------------------------------------------------------
+# Agent registry & orchestrator — initialised once and reused across requests
+# ---------------------------------------------------------------------------
+_orchestrator = None
+
+
+async def _get_orchestrator():
+    """Lazy-initialise the agent-based orchestrator (singleton)."""
+    global _orchestrator
+    if _orchestrator is not None:
+        return _orchestrator
+
+    from openai import OpenAI
+    from agents import AgentRegistry, FinanceAgent, ProductivityAgent, GeneralAgent
+    from services.orchestrator import Orchestrator
+    from services.memory_service import MemoryService
+    from services.calendar_service import CalendarService
+    from services.db import user_memory_collection, transactions_collection, calendar_tokens_collection
+
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    # Build services
+    memory_service = MemoryService(user_memory_collection)
+    calendar_service = CalendarService(calendar_tokens_collection)
+
+    # Build agent registry
+    registry = AgentRegistry()
+
+    # Register agents
+    await registry.register(
+        FinanceAgent(
+            openai_client=openai_client,
+            transactions_collection=transactions_collection,
+            memory_service=memory_service,
+        )
+    )
+    await registry.register(
+        ProductivityAgent(
+            calendar_service=calendar_service,
+            openai_client=openai_client,
+        )
+    )
+    await registry.register(
+        GeneralAgent(openai_client=openai_client, memory_service=memory_service),
+        is_fallback=True,
+    )
+
+    # Build orchestrator
+    _orchestrator = Orchestrator(
+        agent_registry=registry,
+        memory_service=memory_service,
+        openai_client=openai_client,
+    )
+
+    print("[OK] Agent-based orchestrator initialised")
+    return _orchestrator
+
+
+async def process_user_request(user_input: str, user_id: str = None) -> str:
     """Process user input through the orchestrator and return response."""
-    import asyncio
-    
-    # Feature flag - set to True to use new memory/orchestrator system
-    USE_NEW_ORCHESTRATOR = True
-    
-    if not openai_client:
+    if not os.getenv("OPENAI_API_KEY"):
         return "OpenAI API key not configured. Please set OPENAI_API_KEY."
-    
-    # ----------------------------
-    # NEW: Orchestrator-based processing
-    # ----------------------------
-    if USE_NEW_ORCHESTRATOR and user_id:
-        try:
-            from services.orchestrator import Orchestrator
-            from services.memory_service import MemoryService
-            from services.db import user_memory_collection, transactions_collection
-            
-            # Initialize services
-            memory_service = MemoryService(user_memory_collection)
-            orchestrator = Orchestrator(
-                memory_service=memory_service,
-                openai_client=openai_client,
-                transactions_collection=transactions_collection
-            )
-            
-            # Process through orchestrator
-            result = await orchestrator.process_request(user_id, user_input)
-            
-            print(f"[ORCHESTRATOR] Intent: {result.get('intent')}, Action: {result.get('action_taken')}")
-            
-            return result.get("response", "I encountered an issue processing that.")
-        except Exception as e:
-            print(f"[ORCHESTRATOR ERROR] {e}")
-            traceback.print_exc()
-            # Fall through to old system
-    
-    # ----------------------------
-    # LEGACY: Old classification system (fallback)
-    # ----------------------------
+
+    if not user_id:
+        user_id = "anonymous"
+
     try:
-        loop = asyncio.get_event_loop()
-        response_data = await loop.run_in_executor(None, classify_user_request, user_input)
-        
-        responses = []
-        
-        for req in response_data.requests:
-            print(f"[ASSISTANT] Service: {req.DesiredService}, desc: {req.desc}")
-            
-            if req.DesiredService == "fin-manager":
-                finance_manager = FinanceManager()
-                response = await loop.run_in_executor(
-                    None, finance_manager.process_request, openai_client, req.desc, user_input, user_id
-                )
-                responses.append(response)
-                
-            elif req.DesiredService == "task":
-                task_manager = TaskManager()
-                response = await loop.run_in_executor(
-                    None, task_manager.process_request, openai_client, user_input
-                )
-                responses.append(response)
-                
-            elif req.DesiredService == "talk":
-                conversation_manager = ConversationManager()
-                response_obj = await loop.run_in_executor(
-                    None, conversation_manager.process_conversation, openai_client, user_input
-                )
-                response = response_obj.responseToUser if hasattr(response_obj, 'responseToUser') else str(response_obj)
-                responses.append(response)
-                
-            elif req.DesiredService == "goodbye":
-                responses.append(req.desc)
-        
-        return " ".join(responses) if responses else "I didn't understand that. Could you repeat?"
-        
+        orchestrator = await _get_orchestrator()
+        result = await orchestrator.process_request(user_id, user_input)
+
+        print(
+            f"[STREAM] Intent: {result.get('intent')}, "
+            f"Domain: {result.get('domain')}, "
+            f"Actions: {result.get('actions_taken')}"
+        )
+
+        return result.get("response", "I encountered an issue processing that.")
     except Exception as e:
-        print(f"[ASSISTANT ERROR] {e}")
+        print(f"[STREAM] Orchestrator error: {e}")
         traceback.print_exc()
         return "I encountered an error. Please try again."
 
@@ -160,11 +158,10 @@ async def process_user_request(user_input: str, openai_client, user_id: str = No
 @router.websocket("/stream")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time audio streaming."""
-    from openai import OpenAI
     import jwt
-    
+
     await websocket.accept()
-    
+
     # Extract user_id from token query param
     user_id = None
     try:
@@ -176,11 +173,7 @@ async def websocket_endpoint(websocket: WebSocket):
             print(f"[STREAM] User ID: {user_id}")
     except Exception as e:
         print(f"[STREAM] Could not extract user_id: {e}")
-    
-    # Get OpenAI client
-    openai_key = os.getenv("OPENAI_API_KEY")
-    openai_client = OpenAI(api_key=openai_key) if openai_key else None
-    
+
     chunk_size = int(SAMPLERATE * BYTES_PER_SAMPLE * CHANNELS * CHUNK_MS / 1000)
     audio_buffer = bytearray()
     speech_buffer = bytearray()
@@ -206,7 +199,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     speech_buffer.extend(chunk)
                 else:
                     silence_ms += CHUNK_MS
-                    
+
                     # Process when silence detected after speech
                     if silence_ms >= SILENCE_DURATION_MS and len(speech_buffer) > 0:
                         if stt_provider:
@@ -214,12 +207,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                 text = stt_provider.transcribe(speech_buffer)
                                 if text:
                                     print(f"[TRANSCRIPT] {text}")
-                                    
+
                                     try:
-                                        response = await process_user_request(text, openai_client, user_id)
+                                        response = await process_user_request(text, user_id)
                                         await websocket.send_json({
                                             "response": response,
-                                            "type": "assistant_response"
+                                            "type": "assistant_response",
                                         })
                                         print(f"[ASSISTANT] Sent: {response[:50]}...")
                                     except Exception as e:
@@ -227,13 +220,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                         await websocket.send_json({
                                             "response": "Sorry, I encountered an error.",
                                             "type": "assistant_response",
-                                            "error": str(e)
+                                            "error": str(e),
                                         })
                             except Exception as stt_error:
                                 # Log STT error but keep the connection alive
                                 print(f"[STT ERROR] {stt_error}")
-                                # Don't crash - just continue listening
-                        
+
                         speech_buffer = bytearray()
                         silence_ms = 0
 
@@ -246,11 +238,11 @@ async def websocket_endpoint(websocket: WebSocket):
             if final_text:
                 print(f"[TRANSCRIPT] Final: {final_text}")
                 try:
-                    response = await process_user_request(final_text, openai_client, user_id)
+                    response = await process_user_request(final_text, user_id)
                     await websocket.send_json({
                         "response": response,
-                        "type": "assistant_response"
+                        "type": "assistant_response",
                     })
-                except:
+                except Exception:
                     pass
         print("[STREAM] WebSocket disconnected")

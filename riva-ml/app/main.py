@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import routers
-from routers import auth_router, user_router, stream_router, init_stt_provider, finance_router
+from routers import auth_router, user_router, stream_router, init_stt_provider, finance_router, calendar_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -37,6 +37,7 @@ app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(stream_router)
 app.include_router(finance_router)
+app.include_router(calendar_router)
 
 
 @app.get("/")
