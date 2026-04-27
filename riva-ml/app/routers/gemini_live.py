@@ -35,7 +35,7 @@ router = APIRouter(tags=["Gemini Live"])
 # ---------------------------------------------------------------------------
 # Tools that can be fire-and-forget (write operations)
 # ---------------------------------------------------------------------------
-BACKGROUND_TOOLS = {"add_expense", "schedule_event", "update_event", "delete_event"}
+BACKGROUND_TOOLS = {"add_expense", "update_event", "delete_event"}
 
 # Immediate ACK messages sent to Gemini while the real work happens in background
 ACK_MESSAGES = {
@@ -210,30 +210,81 @@ async def get_tools_and_handlers(user_id: str):
             return {"status": "success", "response": resp.response}
 
         elif name == "schedule_event":
-            from dateutil.parser import parse
+            from dateutil.parser import parse as dtparse
             from datetime import timedelta
+            import pytz
 
-            start_time = args["start_time"]
-            end_time   = args.get("end_time")
-            if not end_time:
-                try:
-                    end_time = (parse(start_time) + timedelta(hours=1)).isoformat()
-                except Exception:
-                    end_time = start_time
+            IST = pytz.timezone("Asia/Kolkata")
+
+            def to_ist_iso(time_str: str) -> str:
+                """Parse any time string and return an IST-aware ISO 8601 string.
+                Gemini often outputs naive datetimes like '2026-04-28T15:00:00'
+                with no TZ suffix — we assume those mean IST, not UTC.
+                """
+                parsed = dtparse(time_str)
+                if parsed.tzinfo is None:
+                    parsed = IST.localize(parsed)
+                else:
+                    parsed = parsed.astimezone(IST)
+                return parsed.isoformat()
+
+            start_iso = to_ist_iso(args["start_time"])
+            end_str   = args.get("end_time")
+            if end_str:
+                end_iso = to_ist_iso(end_str)
+            else:
+                # Default: 1 hour after start
+                naive_start = dtparse(args["start_time"]).replace(tzinfo=None)
+                end_iso = to_ist_iso((naive_start + timedelta(hours=1)).isoformat())
+
+            # ── Conflict check before creating ────────────────────────────────
+            conflicts = await calendar_service.check_conflicts(
+                user_id=user_id,
+                start_time=start_iso,
+                end_time=end_iso,
+            )
+            if conflicts:
+                names = ", ".join(
+                    f"'{e['title']}' at {e['start_time']}" for e in conflicts[:3]
+                )
+                return {
+                    "status": "conflict",
+                    "message": (
+                        f"There's a scheduling conflict: {names}. "
+                        "Ask the user: should I schedule anyway, cancel the existing event, "
+                        "or pick a different time?"
+                    ),
+                    "conflicting_events": [{"title": e["title"], "start": e["start_time"], "id": e["id"]} for e in conflicts],
+                }
 
             result = await calendar_service.create_event(
                 user_id=user_id,
                 title=args["title"],
-                start_time=start_time,
-                end_time=end_time,
+                start_time=start_iso,
+                end_time=end_iso,
                 description=args.get("description", ""),
+                timezone="Asia/Kolkata",
             )
             if result:
                 return {"status": "success", "event_id": result.get("id")}
             return {"status": "error", "message": "Calendar not connected or event creation failed."}
 
         elif name == "update_event":
+            from dateutil.parser import parse as dtparse
+            import pytz
+            IST = pytz.timezone("Asia/Kolkata")
+
+            # Normalise any time strings in updates to IST
             updates = {k: v for k, v in args.items() if k != "event_id"}
+            for time_field in ("start_time", "end_time"):
+                if time_field in updates:
+                    parsed = dtparse(updates[time_field])
+                    if parsed.tzinfo is None:
+                        parsed = IST.localize(parsed)
+                    else:
+                        parsed = parsed.astimezone(IST)
+                    updates[time_field] = parsed.isoformat()
+
             result = await calendar_service.update_event(
                 user_id=user_id,
                 event_id=args["event_id"],
@@ -343,12 +394,16 @@ async def gemini_live_endpoint(websocket: WebSocket):
             parts=[types.Part(text=(
                 "You are RIVA, a voice-first personal assistant for finance and productivity. "
                 "Personality: warm, efficient, human — like a smart friend who gets things done without wasting words. "
+                "\n\nTIMEZONE: The user is in India (IST, Asia/Kolkata, UTC+5:30). "
+                "Always generate datetime strings in IST with the +05:30 offset, e.g. '2026-04-28T15:00:00+05:30'. "
+                "Never use UTC or assume UTC. When the user says '3pm', that means 15:00 IST."
                 "\n\nRESPONSE RULES:"
                 "\n- Be naturally brief. Speak like a human assistant, not a chatbot."
-                "\n- For completed actions (expense added, event scheduled): confirm in one short natural sentence. e.g. 'Done!', 'Added.', 'Scheduled that for you.', 'Got it.'"
-                "\n- Never read back all the details the user just told you — they know what they said."
-                "\n- For spending queries or event lists: give the key number or event directly, no filler."
+                "\n- For completed actions: confirm in one short natural sentence."
+                "\n- Never read back all the details the user just told you."
+                "\n- For spending queries or event lists: give the key info directly, no filler."
                 "\n- If a tool returns status=error: briefly tell the user what went wrong."
+                "\n- If a tool returns status=conflict: tell the user what's already scheduled and ask what they'd like to do (reschedule, cancel existing, or schedule anyway)."
                 "\n- If the user says bye or is done: say a brief goodbye and call end_conversation."
                 "\n- For update/delete: call list_events first to find the event_id, then act."
                 "\n- You may call multiple tools in a single turn when needed."
@@ -363,7 +418,7 @@ async def gemini_live_endpoint(websocket: WebSocket):
     # - function calling / tool responses
     # gemini-2.5-flash-native-audio-latest is a DIFFERENT model (native audio generation,
     # not the bidirectional Live API) and returns 1008 with these features.
-    model_id = "gemini-live-2.5-flash-preview"
+    model_id = "gemini-3.1-flash-live-preview"
     MAX_RECONNECT_ATTEMPTS = 5
 
     # The browser WebSocket stays open across Gemini reconnects.
@@ -453,7 +508,21 @@ async def gemini_live_endpoint(websocket: WebSocket):
                                 )
                             elif "text" in data:
                                 msg = json.loads(data["text"])
-                                if msg.get("type") == "input_text":
+                                msg_type = msg.get("type")
+
+                                if msg_type == "barge_in":
+                                    # User spoke while RIVA was talking.
+                                    # Send activity_start so Gemini knows to stop
+                                    # generating and pay attention to incoming audio.
+                                    print("[GEMINI_LIVE] Barge-in detected — signalling Gemini")
+                                    try:
+                                        await session.send_realtime_input(
+                                            activity_start=types.ActivityStart()
+                                        )
+                                    except Exception as e:
+                                        print(f"[GEMINI_LIVE] activity_start error: {e}")
+
+                                elif msg_type == "input_text":
                                     await session.send_client_content(
                                         turns=types.Content(
                                             role="user",

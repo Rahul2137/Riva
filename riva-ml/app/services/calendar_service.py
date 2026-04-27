@@ -194,6 +194,11 @@ class CalendarService:
                     response = await client.put(
                         f"{base_url}{endpoint}", headers=headers, json=body
                     )
+                elif method == "PATCH":
+                    # Partial update — only supplied fields are changed
+                    response = await client.patch(
+                        f"{base_url}{endpoint}", headers=headers, json=body
+                    )
                 elif method == "DELETE":
                     response = await client.delete(f"{base_url}{endpoint}", headers=headers)
                     return {"deleted": response.status_code == 204}
@@ -262,7 +267,11 @@ class CalendarService:
     async def update_event(
         self, user_id: str, event_id: str, updates: Dict
     ) -> Optional[Dict]:
-        """Update an existing calendar event."""
+        """Partially update an existing calendar event using PATCH.
+        
+        Only the fields present in `updates` are changed.
+        Existing fields not mentioned are preserved (unlike PUT which wipes them).
+        """
         body = {}
         if "title" in updates:
             body["summary"] = updates["title"]
@@ -271,16 +280,20 @@ class CalendarService:
         if "start_time" in updates:
             body["start"] = {
                 "dateTime": updates["start_time"],
-                "timeZone": updates.get("timezone", "Asia/Kolkata"),
+                "timeZone": "Asia/Kolkata",  # always IST
             }
         if "end_time" in updates:
             body["end"] = {
                 "dateTime": updates["end_time"],
-                "timeZone": updates.get("timezone", "Asia/Kolkata"),
+                "timeZone": "Asia/Kolkata",  # always IST
             }
 
+        if not body:
+            return None  # Nothing to update
+
+        # PATCH = partial update, preserves all untouched fields
         result = await self._make_request(
-            user_id, "PUT", f"/calendars/primary/events/{event_id}", body
+            user_id, "PATCH", f"/calendars/primary/events/{event_id}", body
         )
         if result:
             return self._format_event(result)

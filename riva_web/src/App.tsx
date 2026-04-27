@@ -27,6 +27,7 @@ function App() {
   
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false); // true while RIVA is playing audio
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLiveMode, setIsLiveMode] = useState(false);
@@ -37,6 +38,11 @@ function App() {
   const shouldResumeListeningRef = useRef(false);
   const ttsUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const pcmPlayerRef = useRef<PCMPlayer | null>(null);
+  const isRivaPlayingRef = useRef(false); // mirror of isSpeaking without stale closure issues
+  const bargeInSentRef = useRef(false);   // prevent duplicate barge_in signals per utterance
+
+  // Barge-in threshold: RMS above this while RIVA is speaking triggers interruption
+  const BARGE_IN_RMS = 0.04;
 
   // Auto-scroll chat
   useEffect(() => {
@@ -149,7 +155,14 @@ function App() {
     shouldResumeListeningRef.current = true;
 
     if (isLiveMode) {
-      pcmPlayerRef.current = new PCMPlayer(24000); // Gemini Live outputs 24kHz
+      const player = new PCMPlayer(24000); // Gemini Live outputs 24kHz
+      // Track when RIVA stops speaking so we reset barge-in state
+      player.onPlaybackEnd = () => {
+        isRivaPlayingRef.current = false;
+        bargeInSentRef.current = false;
+        setIsSpeaking(false);
+      };
+      pcmPlayerRef.current = player;
     }
 
     ws.onopen = () => {
@@ -168,9 +181,22 @@ function App() {
               bytes[i] = binaryString.charCodeAt(i);
             }
             const pcm16 = new Int16Array(bytes.buffer);
+            // Mark RIVA as playing so barge-in detector activates
+            isRivaPlayingRef.current = true;
+            setIsSpeaking(true);
             pcmPlayerRef.current?.feed(pcm16);
           } else if (data.type === 'turn_complete') {
-            // Optional: visual feedback that turn is complete
+            // Optional: visual feedback
+          } else if (data.type === 'reconnecting') {
+            setIsProcessing(true);
+            setError(`Reconnecting to Gemini (attempt ${data.attempt})…`);
+          } else if (data.type === 'reconnected') {
+            setIsProcessing(false);
+            setError(null);
+          } else if (data.type === 'session_end') {
+            // User said goodbye — close everything cleanly
+            addMessage('system', 'Session ended. Goodbye!');
+            stopListening();
           } else if (data.error) {
             setError(data.error);
             stopListening();
@@ -214,6 +240,27 @@ function App() {
         wsRef.current.send(pcmData.buffer as ArrayBuffer);
       }
     });
+
+    // ── Barge-in detector ─────────────────────────────────────────────
+    // If the user's mic level crosses the threshold while RIVA is speaking,
+    // stop RIVA's audio immediately and tell Gemini the user is speaking.
+    recorder.onRMSLevel = (rms: number) => {
+      if (
+        isLiveMode &&
+        isRivaPlayingRef.current &&
+        rms > BARGE_IN_RMS &&
+        !bargeInSentRef.current &&
+        wsRef.current?.readyState === WebSocket.OPEN
+      ) {
+        bargeInSentRef.current = true;
+        // Stop RIVA's current audio immediately
+        pcmPlayerRef.current?.interrupt();
+        isRivaPlayingRef.current = false;
+        setIsSpeaking(false);
+        // Signal backend → Gemini: user has started speaking
+        wsRef.current.send(JSON.stringify({ type: 'barge_in' }));
+      }
+    };
 
     recorder.start()
       .then(() => {
@@ -377,13 +424,21 @@ function App() {
 
                 <div className="controls-container">
                   <div className="status-text">
-                    {isProcessing ? 'Thinking...' : isListening ? 'Listening...' : shouldResumeListeningRef.current ? 'Tap to stop' : 'Ready'}
+                    {isSpeaking
+                      ? '🔊 Speaking… (talk to interrupt)'
+                      : isProcessing
+                      ? 'Thinking...'
+                      : isListening
+                      ? 'Listening...'
+                      : shouldResumeListeningRef.current
+                      ? 'Tap to stop'
+                      : 'Ready'}
                   </div>
                   
                   <div className="mic-wrapper">
                     {isListening && <div className="mic-ripple" />}
                     <button 
-                      className={`mic-btn ${isListening ? 'listening' : ''} ${isProcessing ? 'processing' : ''}`}
+                      className={`mic-btn ${isListening ? 'listening' : ''} ${isProcessing ? 'processing' : ''} ${isSpeaking ? 'speaking' : ''}`}
                       onClick={toggleListening}
                       aria-pressed={shouldResumeListeningRef.current}
                       title={shouldResumeListeningRef.current ? 'Stop voice session' : 'Start voice session'}
