@@ -1,0 +1,412 @@
+import { useState, useRef, useEffect } from 'react';
+import { Mic, Loader2, LogIn, LogOut, AlertCircle, Sparkles, MessageSquare, Calendar as CalendarIcon, Wallet } from 'lucide-react';
+import { signInWithGoogle, signOut, auth } from './firebase';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import { AudioRecorder } from './audioRecorder';
+import { CalendarTab } from './components/CalendarTab';
+import { FinanceTab } from './components/FinanceTab';
+import { PCMPlayer } from './utils/pcmPlayer';
+import './index.css';
+
+interface Message {
+  id: string;
+  sender: 'user' | 'assistant' | 'system';
+  text: string;
+}
+
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/stream';
+const GEMINI_WS_URL = import.meta.env.VITE_GEMINI_WS_URL || 'ws://127.0.0.1:8000/gemini-live';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+
+type Tab = 'voice' | 'calendar' | 'finance';
+
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [idToken, setIdToken] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>('voice');
+  
+  const [isListening, setIsListening] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [isLiveMode, setIsLiveMode] = useState(false);
+  
+  const wsRef = useRef<WebSocket | null>(null);
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const shouldResumeListeningRef = useRef(false);
+  const ttsUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const pcmPlayerRef = useRef<PCMPlayer | null>(null);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, activeTab]);
+
+  // Auth listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        const token = await currentUser.getIdToken();
+        setIdToken(token);
+        // Inform backend about login
+        try {
+          await fetch(`${API_URL}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken: token })
+          });
+        } catch (err) {
+          console.error("Backend login sync failed", err);
+        }
+      } else {
+        setIdToken(null);
+        disconnectWebSocket();
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
+  const addMessage = (sender: Message['sender'], text: string) => {
+    setMessages(prev => [...prev, { id: Date.now().toString(), sender, text }]);
+  };
+
+  const handleLogin = async () => {
+    try {
+      setError(null);
+      await signInWithGoogle();
+    } catch (err: any) {
+      setError(err.message || "Failed to sign in. Mock mode active.");
+      // Fallback for demo without valid Firebase config
+      setUser({ displayName: "Guest User", photoURL: "", email: "guest@example.com", uid: "mock_user" } as User);
+      setIdToken("mock_token");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } catch (err) {
+      setUser(null);
+      setIdToken(null);
+    }
+  };
+
+  const stopRecorder = () => {
+    if (recorderRef.current) {
+      recorderRef.current.stop();
+      recorderRef.current = null;
+    }
+    setIsListening(false);
+  };
+
+  const disconnectWebSocket = () => {
+    shouldResumeListeningRef.current = false;
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      ttsUtteranceRef.current = null;
+    }
+    if (pcmPlayerRef.current) {
+      pcmPlayerRef.current.close();
+      pcmPlayerRef.current = null;
+    }
+    stopRecorder();
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsListening(false);
+    setIsProcessing(false);
+  };
+
+  const resumeRecordingIfNeeded = () => {
+    if (
+      !shouldResumeListeningRef.current ||
+      recorderRef.current ||
+      wsRef.current?.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+
+    startRecording();
+  };
+
+  const connectWebSocket = () => {
+    if (!idToken || wsRef.current) return;
+    
+    const baseUrl = isLiveMode ? GEMINI_WS_URL : WS_URL;
+    const url = `${baseUrl}?token=${encodeURIComponent(idToken)}`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+    shouldResumeListeningRef.current = true;
+
+    if (isLiveMode) {
+      pcmPlayerRef.current = new PCMPlayer(24000); // Gemini Live outputs 24kHz
+    }
+
+    ws.onopen = () => {
+      startRecording();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (isLiveMode) {
+          if (data.type === 'audio') {
+            const binaryString = window.atob(data.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            const pcm16 = new Int16Array(bytes.buffer);
+            pcmPlayerRef.current?.feed(pcm16);
+          } else if (data.type === 'turn_complete') {
+            // Optional: visual feedback that turn is complete
+          } else if (data.error) {
+            setError(data.error);
+            stopListening();
+          }
+        } else {
+          if (data.type === 'assistant_response') {
+            if (data.is_final) {
+              setIsProcessing(false);
+            }
+            addMessage('assistant', data.response);
+            speakText(data.response, data.is_final);
+          } else if (data.type === 'transcript') {
+            addMessage('user', data.text);
+            setIsProcessing(true);
+            stopRecorder();
+          }
+        }
+      } catch (err) {
+        console.error("Failed to parse WS message", err);
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket Error", err);
+      setError("Connection error to backend voice stream.");
+      stopListening();
+    };
+
+    ws.onclose = () => {
+      stopListening();
+    };
+  };
+
+  const startRecording = () => {
+    if (recorderRef.current || wsRef.current?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const recorder = new AudioRecorder((pcmData) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(pcmData.buffer as ArrayBuffer);
+      }
+    });
+
+    recorder.start()
+      .then(() => {
+        recorderRef.current = recorder;
+        setIsListening(true);
+      })
+      .catch(() => {
+        setError("Microphone access denied or not available.");
+        disconnectWebSocket();
+      });
+  };
+
+  const stopListening = () => {
+    disconnectWebSocket();
+  };
+
+  const toggleListening = () => {
+    if (shouldResumeListeningRef.current) {
+      stopListening();
+    } else {
+      setError(null);
+      connectWebSocket();
+    }
+  };
+
+  const speakText = (text: string, shouldResume: boolean = true) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      ttsUtteranceRef.current = utterance;
+      utterance.onend = () => {
+        if (ttsUtteranceRef.current === utterance) {
+          ttsUtteranceRef.current = null;
+        }
+        if (shouldResume) {
+          resumeRecordingIfNeeded();
+        }
+      };
+      utterance.onerror = () => {
+        if (ttsUtteranceRef.current === utterance) {
+          ttsUtteranceRef.current = null;
+        }
+        if (shouldResume) {
+          resumeRecordingIfNeeded();
+        }
+      };
+      window.speechSynthesis.speak(utterance);
+      return;
+    }
+
+    resumeRecordingIfNeeded();
+  };
+
+  return (
+    <div className="app-container">
+      <header>
+        <div className="logo" style={{ display: 'flex', alignItems: 'center' }}>
+          <Sparkles style={{ marginRight: '0.5rem' }} size={28} />
+          RIVA Web
+        </div>
+        <div className="auth-section">
+          {user ? (
+            <div className="user-profile">
+              <span className="user-name" style={{ display: 'inline-block' }}>{user.displayName || user.email}</span>
+              {user.photoURL && <img src={user.photoURL} alt="Profile" className="avatar" />}
+              <button className="btn" onClick={handleLogout}>
+                <LogOut size={18} />
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button className="btn btn-primary" onClick={handleLogin}>
+              <LogIn size={18} />
+              Sign In with Google
+            </button>
+          )}
+        </div>
+      </header>
+
+      {user && (
+        <div className="nav-tabs" style={{ display: 'flex', justifyContent: 'center', gap: '1rem', margin: '2rem 0' }}>
+          <button 
+            className={`tab-btn ${activeTab === 'voice' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('voice')}
+          >
+            <MessageSquare size={18} /> Voice
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'calendar' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('calendar')}
+          >
+            <CalendarIcon size={18} /> Calendar
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'finance' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('finance')}
+          >
+            <Wallet size={18} /> Finance
+          </button>
+        </div>
+      )}
+
+      {user && activeTab === 'voice' && (
+        <div className="live-mode-toggle" style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem' }}>
+          <label className="toggle-switch">
+            <input 
+              type="checkbox" 
+              checked={isLiveMode} 
+              onChange={(e) => {
+                setIsLiveMode(e.target.checked);
+                if (shouldResumeListeningRef.current) stopListening();
+              }} 
+            />
+            <span className="slider round"></span>
+            <span className="toggle-label" style={{ marginLeft: '0.5rem', color: isLiveMode ? '#3b82f6' : '#94a3b8', fontWeight: 600 }}>
+              {isLiveMode ? 'Gemini Live Active' : 'Enable Live Mode (Beta)'}
+            </span>
+          </label>
+        </div>
+      )}
+
+      <main style={{ padding: user ? '0 0 2rem 0' : '2rem 0' }}>
+        {error && activeTab === 'voice' && (
+          <div className="error-banner">
+            <AlertCircle size={20} />
+            {error}
+          </div>
+        )}
+
+        {!user ? (
+          <div className="glass-panel login-prompt">
+            <h2>Welcome to RIVA</h2>
+            <p>Your intelligent voice-first personal assistant. Sign in to access your synchronized calendar, finances, and multi-agent AI across all your devices.</p>
+          </div>
+        ) : (
+          <>
+            {activeTab === 'voice' && (
+              <>
+                <div className="glass-panel" style={{ flex: 1, minHeight: '400px', display: 'flex', flexDirection: 'column' }}>
+                  <div className="chat-history" style={{ flex: 1 }}>
+                    {messages.length === 0 ? (
+                      <div style={{ textAlign: 'center', color: '#94a3b8', marginTop: '2.5rem' }}>
+                        Tap the microphone and say something to RIVA...
+                      </div>
+                    ) : (
+                      messages.map((msg) => (
+                        <div key={msg.id} className={`message ${msg.sender}`}>
+                          <span className="message-sender">
+                            {msg.sender === 'user' ? 'You' : 'RIVA'}
+                          </span>
+                          <div className="message-bubble">
+                            {msg.text}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+                </div>
+
+                <div className="controls-container">
+                  <div className="status-text">
+                    {isProcessing ? 'Thinking...' : isListening ? 'Listening...' : shouldResumeListeningRef.current ? 'Tap to stop' : 'Ready'}
+                  </div>
+                  
+                  <div className="mic-wrapper">
+                    {isListening && <div className="mic-ripple" />}
+                    <button 
+                      className={`mic-btn ${isListening ? 'listening' : ''} ${isProcessing ? 'processing' : ''}`}
+                      onClick={toggleListening}
+                      aria-pressed={shouldResumeListeningRef.current}
+                      title={shouldResumeListeningRef.current ? 'Stop voice session' : 'Start voice session'}
+                    >
+                      {isProcessing ? (
+                        <Loader2 size={36} style={{ animation: 'spin-pulse 2s linear infinite' }} />
+                      ) : (
+                        <Mic size={36} />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === 'calendar' && <CalendarTab user={user} apiUrl={API_URL} />}
+            
+            {activeTab === 'finance' && <FinanceTab user={user} apiUrl={API_URL} />}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+export default App;

@@ -139,38 +139,30 @@ class FinanceAgent(BaseAgent):
         category = self._normalise_category(category)
         tx_type = "income" if intent == "add_income" else "expense"
 
-        # Save to DB
-        action_result = None
+        # Prepare background task for saving transaction
+        background_tasks = []
         if self.transactions is not None:
-            try:
-                transaction = {
-                    "user_id": context.get("user_id", "unknown"),
+            background_tasks.append({
+                "type": "add_transaction",
+                "payload": {
                     "type": tx_type,
                     "amount": float(amount),
                     "currency": "INR",
                     "category": category,
                     "description": description,
-                    "date": date_str,
-                    "created_at": datetime.utcnow(),
+                    "date": date_str
                 }
-                await self.transactions.insert_one(transaction)
-                action_result = f"{tx_type}_added"
-                print(f"[FINANCE_AGENT] Saved {tx_type}: {amount} ({category})")
-            except Exception as e:
-                print(f"[FINANCE_AGENT] DB error: {e}")
-                return AgentResponse(
-                    response="Sorry, I couldn't save that. Please try again.",
-                    metadata={"error": str(e)},
-                )
+            })
 
         response_text = extraction.get(
             "response",
-            f"Got it! Added ₹{amount:,.0f} for {description or category}.",
+            f"Got it! I'm adding ₹{amount:,.0f} for {description or category}.",
         )
 
         return AgentResponse(
             response=response_text,
-            actions_taken=[action_result] if action_result else [],
+            actions_taken=["transaction_queued"],
+            background_tasks=background_tasks,
             data={"amount": amount, "category": category, "type": tx_type},
         )
 
@@ -193,21 +185,22 @@ class FinanceAgent(BaseAgent):
                 pending_field="amount",
             )
 
-        # Save budget via memory service
+        # Prepare background task for setting budget
+        background_tasks = []
         if self.memory_service:
-            try:
-                await self.memory_service.set_budget(
-                    user_id=context.get("user_id", "unknown"),
-                    amount=float(amount),
-                    category=category,
-                )
-            except Exception as e:
-                print(f"[FINANCE_AGENT] Budget save error: {e}")
+            background_tasks.append({
+                "type": "set_budget",
+                "payload": {
+                    "amount": float(amount),
+                    "category": category
+                }
+            })
 
         cat_label = category.title() if category else "overall"
         return AgentResponse(
             response=f"Budget set! I'll track your {cat_label} spending against ₹{amount:,.0f}/month.",
-            actions_taken=["budget_set"],
+            actions_taken=["budget_queued"],
+            background_tasks=background_tasks,
             data={"amount": amount, "category": category},
         )
 
@@ -450,3 +443,26 @@ RULES:
             if category in aliases:
                 return valid_cat
         return "other"
+
+    async def execute_background_task(self, task_type: str, payload: Dict[str, Any], user_id: str):
+        """Execute finance tasks in the background."""
+        if task_type == "add_transaction":
+            print(f"[FINANCE_AGENT] Background saving transaction: {payload.get('amount')}")
+            transaction = {
+                "user_id": user_id,
+                "type": payload.get("type"),
+                "amount": payload.get("amount"),
+                "currency": payload.get("currency", "INR"),
+                "category": payload.get("category"),
+                "description": payload.get("description"),
+                "date": payload.get("date"),
+                "created_at": datetime.utcnow(),
+            }
+            await self.transactions.insert_one(transaction)
+        elif task_type == "set_budget":
+            print(f"[FINANCE_AGENT] Background setting budget: {payload.get('amount')}")
+            await self.memory_service.set_budget(
+                user_id=user_id,
+                amount=payload.get("amount"),
+                category=payload.get("category")
+            )

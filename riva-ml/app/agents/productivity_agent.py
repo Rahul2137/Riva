@@ -140,27 +140,25 @@ class ProductivityAgent(BaseAgent):
                 data={"event_data": event_data, "conflicts": conflicts},
             )
 
-        # Create the event
-        result = await self.calendar_service.create_event(
-            user_id=user_id,
-            title=title,
-            start_time=start_time,
-            end_time=end_time,
-            description=description,
-        )
+        # Prepare background task for event creation
+        background_tasks = [{
+            "type": "create_event",
+            "payload": {
+                "title": title,
+                "start_time": start_time,
+                "end_time": end_time,
+                "description": description
+            }
+        }]
 
-        if result:
-            # Format time for response
-            time_str = self._format_time_for_speech(start_time)
-            return AgentResponse(
-                response=f"Done! '{title}' is scheduled for {time_str}.",
-                actions_taken=["event_created"],
-                data={"event": result},
-            )
-        else:
-            return AgentResponse(
-                response="Sorry, I couldn't create that event. Please try again.",
-            )
+        # Format time for response
+        time_str = self._format_time_for_speech(start_time)
+        return AgentResponse(
+            response=f"Done! I'm scheduling '{title}' for {time_str}.",
+            actions_taken=["event_creation_queued"],
+            background_tasks=background_tasks,
+            data={"event_data": event_data}
+        )
 
     async def _handle_query(self, user_input, context, memory) -> AgentResponse:
         """Query upcoming events."""
@@ -301,22 +299,24 @@ class ProductivityAgent(BaseAgent):
         start_dt = parse(start_time)
         end_dt = start_dt + timedelta(minutes=15)
 
-        result = await self.calendar_service.create_event(
-            user_id=user_id,
-            title=f"⏰ {title}",
-            start_time=start_time,
-            end_time=end_dt.isoformat(),
-            description="Created by RIVA as a reminder",
-        )
+        # Prepare background task
+        background_tasks = [{
+            "type": "create_event",
+            "payload": {
+                "title": f"⏰ {title}",
+                "start_time": start_time,
+                "end_time": end_dt.isoformat(),
+                "description": "Created by RIVA as a reminder"
+            }
+        }]
 
-        if result:
-            time_str = self._format_time_for_speech(start_time)
-            return AgentResponse(
-                response=f"Reminder set! I'll remind you about '{title}' at {time_str}.",
-                actions_taken=["reminder_set"],
-                data={"event": result},
-            )
-        return AgentResponse(response="Sorry, I couldn't set that reminder.")
+        time_str = self._format_time_for_speech(start_time)
+        return AgentResponse(
+            response=f"Reminder set! I'll remind you about '{title}' at {time_str}.",
+            actions_taken=["reminder_queued"],
+            background_tasks=background_tasks,
+            data={"reminder_data": event_data}
+        )
 
     # ------------------------------------------------------------------
     # GPT helpers
@@ -464,3 +464,26 @@ RULES:
             return f"{date_part} at {time_part}"
         except Exception:
             return time_str
+
+    async def execute_background_task(self, task_type: str, payload: Dict[str, Any], user_id: str):
+        """Execute productivity tasks in the background."""
+        if task_type == "create_event":
+            print(f"[PRODUCTIVITY_AGENT] Background creating event: {payload.get('title')}")
+            await self.calendar_service.create_event(
+                user_id=user_id,
+                title=payload.get("title"),
+                start_time=payload.get("start_time"),
+                end_time=payload.get("end_time"),
+                description=payload.get("description", "")
+            )
+        elif task_type == "update_event":
+            await self.calendar_service.update_event(
+                user_id=user_id,
+                event_id=payload.get("event_id"),
+                event_data=payload.get("event_data")
+            )
+        elif task_type == "delete_event":
+            await self.calendar_service.delete_event(
+                user_id=user_id,
+                event_id=payload.get("event_id")
+            )

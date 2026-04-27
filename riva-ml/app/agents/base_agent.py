@@ -39,6 +39,7 @@ class AgentResponse:
     requires_followup: bool = False
     pending_field: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    background_tasks: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class BaseAgent(ABC):

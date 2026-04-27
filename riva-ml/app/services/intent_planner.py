@@ -165,6 +165,7 @@ RULES:
 6. When in doubt about domain, default to general/conversation
 7. If context shows pending_question and user's response is a short answer, 
    resolve it using the pending context
+8. For any intent other than 'conversation', ALWAYS provide an 'immediate_response' (e.g., "Let me check that for you...", "Sure, adding it now...", "One moment...") to reduce perceived latency.
 
 EXAMPLES:
 

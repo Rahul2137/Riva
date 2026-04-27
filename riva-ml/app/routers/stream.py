@@ -17,8 +17,8 @@ router = APIRouter(tags=["Voice Stream"])
 SAMPLERATE = 16000
 CHANNELS = 1
 BYTES_PER_SAMPLE = 2
-SILENCE_THRESHOLD = 100
-SILENCE_DURATION_MS = 800
+SILENCE_THRESHOLD = 800  # Increased to prevent ambient noise from triggering
+SILENCE_DURATION_MS = 600 # Decreased to respond faster after user stops speaking
 CHUNK_MS = 200
 
 # STT Provider Config - Change this ONE value to switch providers
@@ -130,29 +130,30 @@ async def _get_orchestrator():
     return _orchestrator
 
 
-async def process_user_request(user_input: str, user_id: str = None) -> str:
-    """Process user input through the orchestrator and return response."""
+async def process_user_request_stream(user_input: str, user_id: str = None):
+    """Process user input through the orchestrator and yield responses."""
     if not os.getenv("OPENAI_API_KEY"):
-        return "OpenAI API key not configured. Please set OPENAI_API_KEY."
+        yield {"type": "final", "response": "OpenAI API key not configured. Please set OPENAI_API_KEY."}
+        return
 
     if not user_id:
         user_id = "anonymous"
 
     try:
         orchestrator = await _get_orchestrator()
-        result = await orchestrator.process_request(user_id, user_input)
+        async for update in orchestrator.process_request_stream(user_id, user_input):
+            if update["type"] == "final":
+                print(
+                    f"[STREAM] Intent: {update.get('intent')}, "
+                    f"Domain: {update.get('domain')}, "
+                    f"Actions: {update.get('actions_taken')}"
+                )
+            yield update
 
-        print(
-            f"[STREAM] Intent: {result.get('intent')}, "
-            f"Domain: {result.get('domain')}, "
-            f"Actions: {result.get('actions_taken')}"
-        )
-
-        return result.get("response", "I encountered an issue processing that.")
     except Exception as e:
         print(f"[STREAM] Orchestrator error: {e}")
         traceback.print_exc()
-        return "I encountered an error. Please try again."
+        yield {"type": "final", "response": "I encountered an error. Please try again."}
 
 
 @router.websocket("/stream")
@@ -207,19 +208,27 @@ async def websocket_endpoint(websocket: WebSocket):
                                 text = stt_provider.transcribe(speech_buffer)
                                 if text:
                                     print(f"[TRANSCRIPT] {text}")
+                                    
+                                    await websocket.send_json({
+                                        "text": text,
+                                        "type": "transcript",
+                                    })
 
                                     try:
-                                        response = await process_user_request(text, user_id)
-                                        await websocket.send_json({
-                                            "response": response,
-                                            "type": "assistant_response",
-                                        })
-                                        print(f"[ASSISTANT] Sent: {response[:50]}...")
+                                        async for update in process_user_request_stream(text, user_id):
+                                            # Send each update (immediate filler or final response)
+                                            await websocket.send_json({
+                                                "response": update["response"],
+                                                "type": "assistant_response",
+                                                "is_final": update["type"] == "final"
+                                            })
+                                            print(f"[ASSISTANT] {update['type'].upper()}: {update['response'][:50]}...")
                                     except Exception as e:
                                         print(f"[ASSISTANT ERROR] {e}")
                                         await websocket.send_json({
                                             "response": "Sorry, I encountered an error.",
                                             "type": "assistant_response",
+                                            "is_final": True,
                                             "error": str(e),
                                         })
                             except Exception as stt_error:
@@ -238,11 +247,16 @@ async def websocket_endpoint(websocket: WebSocket):
             if final_text:
                 print(f"[TRANSCRIPT] Final: {final_text}")
                 try:
-                    response = await process_user_request(final_text, user_id)
                     await websocket.send_json({
-                        "response": response,
-                        "type": "assistant_response",
+                        "text": final_text,
+                        "type": "transcript",
                     })
+                    async for update in process_user_request_stream(final_text, user_id):
+                        await websocket.send_json({
+                            "response": update["response"],
+                            "type": "assistant_response",
+                            "is_final": update["type"] == "final"
+                        })
                 except Exception:
                     pass
         print("[STREAM] WebSocket disconnected")

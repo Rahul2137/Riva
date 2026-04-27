@@ -22,6 +22,7 @@ from agents.base_agent import AgentResponse
 from services.memory_service import MemoryService
 from services.session_manager import SessionManager, get_session_manager
 from services.intent_planner import IntentPlanner
+import asyncio
 
 load_dotenv()
 
@@ -51,21 +52,19 @@ class Orchestrator:
         # Intent planner (GPT stage 1)
         self.intent_planner = IntentPlanner(self.client)
 
-    async def process_request(
+    async def process_request_stream(
         self,
         user_id: str,
         user_input: str,
-    ) -> Dict:
+    ):
         """
-        Main entry point — The Golden Flow.
+        Main entry point — The Golden Flow (Stream version).
 
-        Returns:
+        Yields:
             {
+                "type": "immediate" | "final",
                 "response": str,
-                "intent": str,
-                "domain": str,
-                "actions_taken": List[str],
-                "requires_followup": bool,
+                ...other fields...
             }
         """
         print(f"\n[ORCHESTRATOR] ===== Processing: '{user_input}' =====")
@@ -104,6 +103,13 @@ class Orchestrator:
         print(f"[ORCHESTRATOR] Intent: {intent}, Domain: {domain}, "
               f"needs_clarification: {needs_clarification}")
 
+        immediate_response = plan.get("immediate_response")
+        if immediate_response and intent != "conversation" and not needs_clarification:
+            yield {
+                "type": "immediate",
+                "response": immediate_response,
+            }
+
         # Handle clarification needed
         if needs_clarification:
             response = plan.get("clarification_question", "Could you clarify?")
@@ -113,13 +119,15 @@ class Orchestrator:
                 plan.get("action_data", {}),
             )
             self.session_manager.add_message(user_id, "assistant", response)
-            return {
+            yield {
+                "type": "final",
                 "response": response,
                 "intent": intent,
                 "domain": domain,
                 "actions_taken": [],
                 "requires_followup": True,
             }
+            return
 
         # ----------------------------------------------------------
         # STAGE 2: Agent Routing
@@ -133,13 +141,15 @@ class Orchestrator:
 
         if agent is None:
             print("[ORCHESTRATOR] ERROR: No agents registered!")
-            return {
+            yield {
+                "type": "final",
                 "response": "I'm having trouble processing that right now.",
                 "intent": intent,
                 "domain": domain,
                 "actions_taken": [],
                 "requires_followup": False,
             }
+            return
 
         print(f"[ORCHESTRATOR] Routed to: {agent.domain} agent")
 
@@ -165,15 +175,26 @@ class Orchestrator:
             print(f"[ORCHESTRATOR] Agent error: {e}")
             import traceback
             traceback.print_exc()
-            return {
+            yield {
+                "type": "final",
                 "response": "I encountered an error. Please try again.",
                 "intent": intent,
                 "domain": domain,
                 "actions_taken": [],
                 "requires_followup": False,
             }
+            return
 
         print(f"[ORCHESTRATOR] Agent response: {agent_response.response[:80]}...")
+ 
+        # ----------------------------------------------------------
+        # STAGE 3.5: Handle Background Tasks
+        # ----------------------------------------------------------
+        if agent_response.background_tasks:
+            print(f"[ORCHESTRATOR] Queueing {len(agent_response.background_tasks)} background tasks...")
+            asyncio.create_task(self._run_background_tasks(user_id, agent, agent_response.background_tasks))
+ 
+        # ----------------------------------------------------------
 
         # ----------------------------------------------------------
         # STAGE 4: Memory Updates
@@ -221,10 +242,27 @@ class Orchestrator:
         print(f"[ORCHESTRATOR] ===== Complete: "
               f"{len(agent_response.actions_taken)} actions =====\n")
 
-        return {
+        yield {
+            "type": "final",
             "response": agent_response.response,
             "intent": intent,
             "domain": agent.domain,
             "actions_taken": agent_response.actions_taken,
             "requires_followup": agent_response.requires_followup,
         }
+
+    async def _run_background_tasks(self, user_id: str, agent: Any, tasks: List[Dict[str, Any]]):
+        """Execute background tasks after the response has been sent."""
+        for task in tasks:
+            task_type = task.get("type")
+            payload = task.get("payload", {})
+            print(f"[ORCHESTRATOR] Running background task: {task_type} (Agent: {agent.domain})")
+            
+            try:
+                # Delegate back to the agent for background processing if it has a method for it
+                if hasattr(agent, "execute_background_task"):
+                    await agent.execute_background_task(task_type, payload, user_id)
+                else:
+                    print(f"[WARNING] Agent {agent.domain} does not support background tasks.")
+            except Exception as e:
+                print(f"[ERROR] Background task {task_type} failed: {e}")
