@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Mic, Loader2, LogIn, LogOut, AlertCircle, Sparkles, MessageSquare, Calendar as CalendarIcon, Wallet } from 'lucide-react';
+import { Mic, Loader2, LogIn, LogOut, AlertCircle, Sparkles, MessageSquare, Calendar as CalendarIcon, Wallet, CheckSquare } from 'lucide-react';
 import { signInWithGoogle, signOut, auth } from './firebase';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { AudioRecorder } from './audioRecorder';
 import { CalendarTab } from './components/CalendarTab';
 import { FinanceTab } from './components/FinanceTab';
+import { TodoTab } from './components/TodoTab';
 import { PCMPlayer } from './utils/pcmPlayer';
 import './index.css';
 
@@ -18,7 +19,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/stream';
 const GEMINI_WS_URL = import.meta.env.VITE_GEMINI_WS_URL || 'ws://127.0.0.1:8000/gemini-live';
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
-type Tab = 'voice' | 'calendar' | 'finance';
+type Tab = 'voice' | 'calendar' | 'tasks' | 'finance';
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -356,6 +357,12 @@ function App() {
             <CalendarIcon size={18} /> Calendar
           </button>
           <button 
+            className={`tab-btn ${activeTab === 'tasks' ? 'active' : ''}`} 
+            onClick={() => setActiveTab('tasks')}
+          >
+            <CheckSquare size={18} /> Tasks
+          </button>
+          <button 
             className={`tab-btn ${activeTab === 'finance' ? 'active' : ''}`} 
             onClick={() => setActiveTab('finance')}
           >
@@ -455,6 +462,8 @@ function App() {
             )}
 
             {activeTab === 'calendar' && <CalendarTab user={user} apiUrl={API_URL} />}
+
+            {activeTab === 'tasks' && <TodoTab user={user} apiUrl={API_URL} />}
             
             {activeTab === 'finance' && <FinanceTab user={user} apiUrl={API_URL} />}
           </>

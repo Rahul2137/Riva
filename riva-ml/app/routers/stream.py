@@ -85,17 +85,21 @@ async def _get_orchestrator():
         return _orchestrator
 
     from openai import OpenAI
-    from agents import AgentRegistry, FinanceAgent, ProductivityAgent, GeneralAgent
+    from agents import AgentRegistry, FinanceAgent, ProductivityAgent, TodoAgent, GeneralAgent
     from services.orchestrator import Orchestrator
     from services.memory_service import MemoryService
     from services.calendar_service import CalendarService
-    from services.db import user_memory_collection, transactions_collection, calendar_tokens_collection
+    from services.todo_service import TodoService
+    from services.schedule_context import ScheduleContext
+    from services.db import user_memory_collection, transactions_collection, calendar_tokens_collection, todos_collection
 
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     # Build services
     memory_service = MemoryService(user_memory_collection)
     calendar_service = CalendarService(calendar_tokens_collection)
+    todo_service = TodoService(todos_collection)
+    schedule_context = ScheduleContext(calendar_service=calendar_service, todo_service=todo_service)
 
     # Build agent registry
     registry = AgentRegistry()
@@ -115,18 +119,27 @@ async def _get_orchestrator():
         )
     )
     await registry.register(
+        TodoAgent(
+            todo_service=todo_service,
+            schedule_context=schedule_context,
+            openai_client=openai_client,
+        )
+    )
+    await registry.register(
         GeneralAgent(openai_client=openai_client, memory_service=memory_service),
         is_fallback=True,
     )
 
-    # Build orchestrator
+    # Build orchestrator (v3: proactive engine needs todo & calendar services)
     _orchestrator = Orchestrator(
         agent_registry=registry,
         memory_service=memory_service,
         openai_client=openai_client,
+        todo_service=todo_service,
+        calendar_service=calendar_service,
     )
 
-    print("[OK] Agent-based orchestrator initialised")
+    print("[OK] Agent-based orchestrator v3 initialised (ProactiveEngine active)")
     return _orchestrator
 
 

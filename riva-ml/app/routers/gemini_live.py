@@ -24,10 +24,13 @@ from google import genai
 from google.genai import types
 from typing import Dict, Any
 
-from agents import FinanceAgent, ProductivityAgent
+from agents import FinanceAgent, ProductivityAgent, TodoAgent
+from services.riva_brain import build_riva_system_prompt, get_time_context
 from services.memory_service import MemoryService
 from services.calendar_service import CalendarService
-from services.db import user_memory_collection, transactions_collection, calendar_tokens_collection
+from services.todo_service import TodoService
+from services.schedule_context import ScheduleContext
+from services.db import user_memory_collection, transactions_collection, calendar_tokens_collection, todos_collection
 from openai import OpenAI
 
 router = APIRouter(tags=["Gemini Live"])
@@ -35,7 +38,7 @@ router = APIRouter(tags=["Gemini Live"])
 # ---------------------------------------------------------------------------
 # Tools that can be fire-and-forget (write operations)
 # ---------------------------------------------------------------------------
-BACKGROUND_TOOLS = {"add_expense", "update_event", "delete_event"}
+BACKGROUND_TOOLS = {"add_expense", "update_event", "delete_event", "add_todo", "complete_todo", "delete_todo"}
 
 # Immediate ACK messages sent to Gemini while the real work happens in background
 ACK_MESSAGES = {
@@ -43,6 +46,9 @@ ACK_MESSAGES = {
     "schedule_event": "scheduled.",
     "update_event":   "updated.",
     "delete_event":   "deleted.",
+    "add_todo":       "added to your list.",
+    "complete_todo":  "marked as done.",
+    "delete_todo":    "removed from your list.",
 }
 
 # Closing phrases that trigger conversation end
@@ -57,6 +63,8 @@ async def get_tools_and_handlers(user_id: str):
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     memory_service  = MemoryService(user_memory_collection)
     calendar_service = CalendarService(calendar_tokens_collection)
+    todo_service = TodoService(todos_collection)
+    schedule_context = ScheduleContext(calendar_service=calendar_service, todo_service=todo_service)
 
     finance_agent = FinanceAgent(
         openai_client=openai_client,
@@ -150,6 +158,55 @@ async def get_tools_and_handlers(user_id: str):
                         "properties": {
                             "days": {"type": "NUMBER", "description": "How many days ahead to look (default 1)."},
                         },
+                    },
+                },
+                # ── To-Do ─────────────────────────────────────────────────
+                {
+                    "name": "add_todo",
+                    "description": "Add a new task/to-do item to the user's list.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "title":    {"type": "STRING", "description": "Task title (e.g. 'Buy groceries')."},
+                            "due_date": {"type": "STRING", "description": "YYYY-MM-DD (optional, defaults to today)."},
+                            "due_time": {"type": "STRING", "description": "HH:MM (optional)."},
+                            "priority": {"type": "STRING", "description": "high | medium | low (default: medium)."},
+                            "category": {"type": "STRING", "description": "work | personal | health | study | other."},
+                        },
+                        "required": ["title"],
+                    },
+                },
+                {
+                    "name": "list_todos",
+                    "description": "List the user's pending to-do items.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "days":   {"type": "NUMBER", "description": "How many days ahead to look (default 1)."},
+                            "status": {"type": "STRING", "description": "Filter: pending | completed (default: pending)."},
+                        },
+                    },
+                },
+                {
+                    "name": "complete_todo",
+                    "description": "Mark a to-do item as completed. Use list_todos first to find the todo_id.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "todo_id": {"type": "STRING", "description": "The MongoDB ID of the todo to complete."},
+                        },
+                        "required": ["todo_id"],
+                    },
+                },
+                {
+                    "name": "delete_todo",
+                    "description": "Permanently delete a to-do item. Use list_todos first to confirm the todo_id.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "todo_id": {"type": "STRING", "description": "The MongoDB ID of the todo to delete."},
+                        },
+                        "required": ["todo_id"],
                     },
                 },
                 {
@@ -314,6 +371,71 @@ async def get_tools_and_handlers(user_id: str):
             )
             return {"status": "success", "events": events or []}
 
+        # ── To-Do tools ───────────────────────────────────────────────
+        elif name == "add_todo":
+            from datetime import datetime as dt
+            try:
+                result = await todo_service.add_todo(
+                    user_id=user_id,
+                    title=args.get("title", "Untitled task"),
+                    due_date=args.get("due_date") or dt.now().strftime("%Y-%m-%d"),
+                    due_time=args.get("due_time"),
+                    priority=args.get("priority", "medium"),
+                    category=args.get("category", "other"),
+                )
+                print(f"[GEMINI_LIVE][BG] add_todo written: {result.get('title')}")
+                return {"status": "success", "todo_id": result.get("_id")}
+            except Exception as e:
+                print(f"[GEMINI_LIVE][BG] add_todo error: {e}")
+                return {"status": "error", "message": str(e)}
+
+        elif name == "list_todos":
+            from datetime import datetime, timedelta
+
+            days = int(args.get("days", 1))
+            status = args.get("status", "pending")
+            start_date = datetime.now().strftime("%Y-%m-%d")
+            end_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+            todos = await todo_service.get_todos(
+                user_id,
+                status=status,
+                start_date=start_date,
+                end_date=end_date,
+                limit=20,
+            )
+
+            # Also fetch schedule context for cross-domain awareness
+            schedule_summary = ""
+            try:
+                schedule_summary = await schedule_context.get_context_for_prompt(user_id, days=days)
+            except Exception:
+                pass
+
+            return {
+                "status": "success",
+                "todos": todos or [],
+                "schedule_context": schedule_summary,
+            }
+
+        elif name == "complete_todo":
+            try:
+                result = await todo_service.complete_todo(user_id, args["todo_id"])
+                if result:
+                    return {"status": "success", "title": result.get("title")}
+                return {"status": "error", "message": "Todo not found."}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        elif name == "delete_todo":
+            try:
+                deleted = await todo_service.delete_todo(user_id, args["todo_id"])
+                if deleted:
+                    return {"status": "success"}
+                return {"status": "error", "message": "Todo not found."}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
         elif name == "end_conversation":
             return {"status": "end_conversation"}
 
@@ -351,6 +473,67 @@ async def get_tools_and_handlers(user_id: str):
 
 
 # ---------------------------------------------------------------------------
+# System prompt builder for Gemini Live
+# Sent ONCE per session (connection time) — zero per-turn token cost.
+# ---------------------------------------------------------------------------
+def _build_gemini_system_prompt(schedule_ctx_text: str = "") -> str:
+    """
+    Build the Gemini Live system_instruction by composing:
+      1. RIVA Brain persona + current time context + productivity skills
+      2. Gemini-specific tool rules (timezone, TO-DO vs Calendar, response style)
+      3. Optional live schedule context
+
+    The result is sent once at session start — not on every turn.
+    Prompt length: ~1,200 tokens (was ~350). Cost impact: negligible because
+    Gemini Live caches the system_instruction across the session.
+    """
+    time_ctx = get_time_context()
+
+    # Core RIVA persona + productivity skills (planning mode = rich skills)
+    base = build_riva_system_prompt(
+        mode="planning",
+        time_ctx=time_ctx,
+        extra_skills=["finance", "wellness", "habits"],
+    )
+
+    # Gemini Live-specific rules (tool usage, timezone, voice style)
+    gemini_rules = """
+VOICE & TOOL RULES (Gemini Live):
+- You are voice-first. Every response will be spoken aloud — be concise and natural.
+- TIMEZONE: User is in India (IST, UTC+5:30). All datetimes must use +05:30 offset.
+  Example: '2026-04-28T15:00:00+05:30'. Never assume UTC.
+
+TO-DO vs CALENDAR (critical distinction):
+- Tasks/to-dos → trackable items with no fixed time slot → add_todo, list_todos, complete_todo, delete_todo
+- Events/meetings → time-bound calendar entries → schedule_event, list_events, update_event, delete_event
+- When adding a task, check schedule context to suggest a good time if relevant.
+- When listing tasks, mention overlapping calendar events.
+
+TOOL BEHAVIOUR:
+- For write operations: confirm in ONE short sentence. Never repeat back all the details.
+- For query results (spending, events, tasks): give the key numbers/names directly, no filler.
+- status=error: briefly tell the user what went wrong.
+- status=conflict: name the conflicting event and ask what to do.
+- For update/delete: call list_events or list_todos first to get the ID, then act.
+- You may call multiple tools in one turn when needed.
+- If the user says bye/goodbye: say a brief farewell and call end_conversation.
+
+PROACTIVE BEHAVIOUR:
+- After completing a task action, if the user's day looks busy, mention it briefly.
+- After adding a todo, if there's a free slot on the calendar, suggest using it.
+- After logging spending, if they're near a budget limit, mention it in one sentence.
+- Keep proactive additions to ≤1 sentence — don't overwhelm.
+"""
+
+    parts = [base.strip(), gemini_rules.strip()]
+
+    if schedule_ctx_text:
+        parts.append(f"CURRENT SCHEDULE CONTEXT:\n{schedule_ctx_text}")
+
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket endpoint
 # ---------------------------------------------------------------------------
 @router.websocket("/gemini-live")
@@ -382,6 +565,18 @@ async def gemini_live_endpoint(websocket: WebSocket):
     client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
     tools, handle_tool_call = await get_tools_and_handlers(user_id)
 
+    # Build shared schedule context for the system prompt
+    schedule_ctx_text = ""
+    try:
+        from services.todo_service import TodoService as _TS
+        from services.schedule_context import ScheduleContext as _SC
+        from services.calendar_service import CalendarService as _CS
+        from services.db import calendar_tokens_collection as _ctc, todos_collection as _tc
+        _sc = _SC(calendar_service=_CS(_ctc), todo_service=_TS(_tc))
+        schedule_ctx_text = await _sc.get_context_for_prompt(user_id, days=2)
+    except Exception as e:
+        print(f"[GEMINI_LIVE] Schedule context build error: {e}")
+
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         tools=tools,
@@ -391,22 +586,8 @@ async def gemini_live_endpoint(websocket: WebSocket):
             )
         ),
         system_instruction=types.Content(
-            parts=[types.Part(text=(
-                "You are RIVA, a voice-first personal assistant for finance and productivity. "
-                "Personality: warm, efficient, human — like a smart friend who gets things done without wasting words. "
-                "\n\nTIMEZONE: The user is in India (IST, Asia/Kolkata, UTC+5:30). "
-                "Always generate datetime strings in IST with the +05:30 offset, e.g. '2026-04-28T15:00:00+05:30'. "
-                "Never use UTC or assume UTC. When the user says '3pm', that means 15:00 IST."
-                "\n\nRESPONSE RULES:"
-                "\n- Be naturally brief. Speak like a human assistant, not a chatbot."
-                "\n- For completed actions: confirm in one short natural sentence."
-                "\n- Never read back all the details the user just told you."
-                "\n- For spending queries or event lists: give the key info directly, no filler."
-                "\n- If a tool returns status=error: briefly tell the user what went wrong."
-                "\n- If a tool returns status=conflict: tell the user what's already scheduled and ask what they'd like to do (reschedule, cancel existing, or schedule anyway)."
-                "\n- If the user says bye or is done: say a brief goodbye and call end_conversation."
-                "\n- For update/delete: call list_events first to find the event_id, then act."
-                "\n- You may call multiple tools in a single turn when needed."
+            parts=[types.Part(text=_build_gemini_system_prompt(
+                schedule_ctx_text=schedule_ctx_text,
             ))],
         ),
     )
@@ -418,7 +599,9 @@ async def gemini_live_endpoint(websocket: WebSocket):
     # - function calling / tool responses
     # gemini-2.5-flash-native-audio-latest is a DIFFERENT model (native audio generation,
     # not the bidirectional Live API) and returns 1008 with these features.
-    model_id = "gemini-3.1-flash-live-preview"
+    # Free tier: gemini-2.0-flash-live-001
+    # Paid/preview tier: gemini-2.5-flash-preview-native-audio-dialog
+    model_id = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
     MAX_RECONNECT_ATTEMPTS = 5
 
     # The browser WebSocket stays open across Gemini reconnects.

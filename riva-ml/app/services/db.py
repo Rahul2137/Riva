@@ -31,6 +31,9 @@ action_log_collection = db["action_log"]            # Audit trail
 # Calendar System Collections
 calendar_tokens_collection = db["calendar_tokens"]   # Per-user Google OAuth tokens
 
+# To-Do System Collections
+todos_collection = db["todos"]                        # Date-wise to-do items
+
 
 # ----------------------------
 # User Context Functions

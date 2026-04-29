@@ -6,6 +6,7 @@ from .base_agent import BaseAgent, AgentResponse
 from .agent_registry import AgentRegistry
 from .finance_agent import FinanceAgent
 from .productivity_agent import ProductivityAgent
+from .todo_agent import TodoAgent
 from .general_agent import GeneralAgent
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "AgentRegistry",
     "FinanceAgent",
     "ProductivityAgent",
+    "TodoAgent",
     "GeneralAgent",
 ]

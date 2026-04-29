@@ -1,7 +1,7 @@
 from google import genai
 
 # Ensure your API Key is valid and active
-client = genai.Client(api_key="AIzaSyBfBsHO9zz_7q05Sflavbzq8vjfFTg9y9A", http_options={'api_version': 'v1beta'})
+client = genai.Client(api_key="AIzaSyBfBsHO9zz_7q05Sflavbzq8vjfFTg9y9A", http_options={'api_version': 'v1alpha'})
 
 print("Fetching models...")
 try:

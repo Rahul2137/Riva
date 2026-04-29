@@ -1,15 +1,19 @@
 """
-Orchestrator - The Golden Flow Controller (v2: Agent-based)
+Orchestrator - The Golden Flow Controller (v3: Proactive Agent)
 
 Implements the multi-stage pipeline:
-1. Intent Planning  (GPT) — classify intent, plan data needs
+1. Intent Planning  (GPT) — classify intent, plan data needs, detect mood
 2. Agent Routing    (RIVA) — find the right agent via AgentRegistry
 3. Agent Execution  (Agent) — delegate to the domain agent
-4. Memory Updates   (RIVA) — persist inferred memories
-5. Response         (Agent) — return final response
+4. Proactive Check  (RIVA) — append a smart suggestion if context warrants
+5. Memory Updates   (RIVA) — persist inferred memories
+6. Response         (Agent) — return final response
 
-GPT never touches DB directly. Agents validate all writes.
-The Orchestrator is domain-agnostic; all domain logic lives in agents.
+New in v3:
+  - ProactiveEngine evaluates EVERY response for a smart suggestion.
+  - Mood and proactive_hook from IntentPlanner flow into agent context.
+  - New domains (wellness, focus, habit) are routed correctly.
+  - GeneralAgent now receives expanded context (todos, events) for proactive checks.
 """
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -22,6 +26,7 @@ from agents.base_agent import AgentResponse
 from services.memory_service import MemoryService
 from services.session_manager import SessionManager, get_session_manager
 from services.intent_planner import IntentPlanner
+from services.proactive_engine import ProactiveEngine
 import asyncio
 
 load_dotenv()
@@ -30,11 +35,13 @@ load_dotenv()
 CONFIDENCE_AUTO_EXECUTE = 0.8
 CONFIDENCE_ASK_CONFIRM = 0.6
 
+# Domains handled by GeneralAgent (fallthrough + new domains)
+GENERAL_AGENT_DOMAINS = {"general", "wellness", "focus", "habit"}
+
 
 class Orchestrator:
     """
-    Golden Flow Controller v2.
-    Routes intents to registered agents via AgentRegistry.
+    Golden Flow Controller v3 — now with proactive intelligence.
     """
 
     def __init__(
@@ -43,14 +50,23 @@ class Orchestrator:
         memory_service: MemoryService = None,
         session_manager: SessionManager = None,
         openai_client: OpenAI = None,
+        todo_service=None,
+        calendar_service=None,
     ):
         self.registry = agent_registry
         self.memory_service = memory_service
         self.session_manager = session_manager or get_session_manager()
         self.client = openai_client or OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-        # Intent planner (GPT stage 1)
+        # Stage 1: Intent planner
         self.intent_planner = IntentPlanner(self.client)
+
+        # Proactive engine (zero-latency heuristic)
+        self.proactive_engine = ProactiveEngine()
+
+        # Optional service references for proactive context
+        self.todo_service = todo_service
+        self.calendar_service = calendar_service
 
     async def process_request_stream(
         self,
@@ -99,9 +115,18 @@ class Orchestrator:
         intent = plan.get("intent", "conversation")
         domain = plan.get("domain", "general")
         needs_clarification = plan.get("needs_clarification", False)
+        user_mood = plan.get("user_mood", "neutral")
+        proactive_hook = plan.get("proactive_hook")
 
-        print(f"[ORCHESTRATOR] Intent: {intent}, Domain: {domain}, "
-              f"needs_clarification: {needs_clarification}")
+        # Inject mood & proactive hook into context for agents
+        session_context["user_mood"] = user_mood
+        session_context["proactive_hook"] = proactive_hook
+
+        print(
+            f"[ORCHESTRATOR] Intent: {intent}, Domain: {domain}, "
+            f"Mood: {user_mood}, Hook: {proactive_hook}, "
+            f"needs_clarification: {needs_clarification}"
+        )
 
         immediate_response = plan.get("immediate_response")
         if immediate_response and intent != "conversation" and not needs_clarification:
@@ -135,6 +160,10 @@ class Orchestrator:
         print("[ORCHESTRATOR] Stage 2: Agent Routing...")
         agent = self.registry.get_agent_for_intent(intent)
 
+        # New domains (wellness, focus, habit) fall to GeneralAgent
+        if agent is None and domain in GENERAL_AGENT_DOMAINS:
+            agent = self.registry.get_agent_for_domain("general")
+
         if agent is None:
             print(f"[ORCHESTRATOR] No agent found for intent '{intent}', using fallback")
             agent = self.registry.get_agent_for_domain("general")
@@ -143,7 +172,7 @@ class Orchestrator:
             print("[ORCHESTRATOR] ERROR: No agents registered!")
             yield {
                 "type": "final",
-                "response": "I'm having trouble processing that right now.",
+                "response": "I'm having trouble processing that right now. Please try again!",
                 "intent": intent,
                 "domain": domain,
                 "actions_taken": [],
@@ -158,7 +187,7 @@ class Orchestrator:
         # ----------------------------------------------------------
         print("[ORCHESTRATOR] Stage 3: Agent Execution...")
 
-        # Pass plan's action_data into context so agents can use it
+        # Pass plan's extracted data into context
         if plan.get("action_data"):
             session_context["action_data"] = plan["action_data"]
         if plan.get("query_spec"):
@@ -177,7 +206,7 @@ class Orchestrator:
             traceback.print_exc()
             yield {
                 "type": "final",
-                "response": "I encountered an error. Please try again.",
+                "response": "I encountered a hiccup. Could you try that again?",
                 "intent": intent,
                 "domain": domain,
                 "actions_taken": [],
@@ -186,21 +215,43 @@ class Orchestrator:
             return
 
         print(f"[ORCHESTRATOR] Agent response: {agent_response.response[:80]}...")
- 
+
         # ----------------------------------------------------------
         # STAGE 3.5: Handle Background Tasks
         # ----------------------------------------------------------
         if agent_response.background_tasks:
             print(f"[ORCHESTRATOR] Queueing {len(agent_response.background_tasks)} background tasks...")
-            asyncio.create_task(self._run_background_tasks(user_id, agent, agent_response.background_tasks))
- 
-        # ----------------------------------------------------------
+            asyncio.create_task(
+                self._run_background_tasks(user_id, agent, agent_response.background_tasks)
+            )
 
         # ----------------------------------------------------------
-        # STAGE 4: Memory Updates
+        # STAGE 4: Proactive Intelligence Check
+        # ----------------------------------------------------------
+        print("[ORCHESTRATOR] Stage 4: Proactive Engine...")
+        try:
+            proactive_suggestion = await self._get_proactive_suggestion(
+                user_id=user_id,
+                session_context=session_context,
+                memory_context=memory_context,
+                intent=intent,
+                agent_response_text=agent_response.response,
+                proactive_hook=proactive_hook,
+            )
+            if proactive_suggestion:
+                agent_response.response += f"\n\n💡 {proactive_suggestion}"
+                print(f"[ORCHESTRATOR] Proactive suggestion appended: {proactive_suggestion[:60]}...")
+        except Exception as e:
+            print(f"[ORCHESTRATOR] Proactive engine error: {e}")
+
+        # ----------------------------------------------------------
+        # STAGE 5: Memory Updates
         # ----------------------------------------------------------
         if agent_response.memory_updates and self.memory_service:
-            print(f"[ORCHESTRATOR] Stage 4: Processing {len(agent_response.memory_updates)} memory updates...")
+            print(
+                f"[ORCHESTRATOR] Stage 5: Processing "
+                f"{len(agent_response.memory_updates)} memory updates..."
+            )
             for update in agent_response.memory_updates:
                 confidence = update.get("confidence", 0)
                 if confidence >= CONFIDENCE_AUTO_EXECUTE:
@@ -217,10 +268,8 @@ class Orchestrator:
                         print(f"[ORCHESTRATOR] Memory save error: {e}")
 
         # ----------------------------------------------------------
-        # STAGE 5: Session Updates & Response
+        # STAGE 6: Session Updates & Response
         # ----------------------------------------------------------
-
-        # Handle followup state
         if agent_response.requires_followup:
             self.session_manager.set_pending_question(
                 user_id,
@@ -230,17 +279,17 @@ class Orchestrator:
         elif agent_response.actions_taken:
             self.session_manager.clear_pending(user_id)
 
-        # Track last category for context continuity
         if agent_response.data and agent_response.data.get("category"):
             self.session_manager.set_last_category(
                 user_id, agent_response.data["category"]
             )
 
-        # Add response to session history
         self.session_manager.add_message(user_id, "assistant", agent_response.response)
 
-        print(f"[ORCHESTRATOR] ===== Complete: "
-              f"{len(agent_response.actions_taken)} actions =====\n")
+        print(
+            f"[ORCHESTRATOR] ===== Complete: "
+            f"{len(agent_response.actions_taken)} actions =====\n"
+        )
 
         yield {
             "type": "final",
@@ -251,15 +300,86 @@ class Orchestrator:
             "requires_followup": agent_response.requires_followup,
         }
 
-    async def _run_background_tasks(self, user_id: str, agent: Any, tasks: List[Dict[str, Any]]):
+    # ------------------------------------------------------------------
+    # Proactive Engine integration
+    # ------------------------------------------------------------------
+
+    async def _get_proactive_suggestion(
+        self,
+        user_id: str,
+        session_context: Dict,
+        memory_context: Dict,
+        intent: str,
+        agent_response_text: str,
+        proactive_hook: Optional[str],
+    ) -> Optional[str]:
+        """
+        Fetch live todos/events and run the ProactiveEngine.
+        Only appends a suggestion when it's genuinely useful.
+        """
+        # Don't append suggestions to clarification or simple conversations
+        if intent in ("conversation", "general_question"):
+            # Still check for critical hooks
+            if proactive_hook not in ("user_stressed", "overdue_tasks"):
+                return None
+
+        todos = []
+        events = []
+
+        # Fetch todos if service is available
+        if self.todo_service:
+            try:
+                from datetime import timedelta
+                today = datetime.now().strftime("%Y-%m-%d")
+                week_end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+                todos = await self.todo_service.get_todos(
+                    user_id,
+                    start_date=today,
+                    end_date=week_end,
+                    limit=30,
+                )
+            except Exception as e:
+                print(f"[ORCHESTRATOR] Todo fetch error: {e}")
+
+        # Fetch events if calendar service is available
+        if self.calendar_service:
+            try:
+                from datetime import timedelta
+                events = await self.calendar_service.list_events(
+                    user_id,
+                    time_min=datetime.utcnow(),
+                    time_max=datetime.utcnow() + timedelta(days=1),
+                    max_results=10,
+                )
+            except Exception as e:
+                print(f"[ORCHESTRATOR] Calendar fetch error: {e}")
+
+        return await self.proactive_engine.evaluate(
+            user_id=user_id,
+            session_context=session_context,
+            memory_context=memory_context,
+            todos=todos,
+            events=events,
+            intent=intent,
+            last_agent_response=agent_response_text,
+        )
+
+    # ------------------------------------------------------------------
+    # Background task runner
+    # ------------------------------------------------------------------
+
+    async def _run_background_tasks(
+        self, user_id: str, agent: Any, tasks: List[Dict[str, Any]]
+    ):
         """Execute background tasks after the response has been sent."""
         for task in tasks:
             task_type = task.get("type")
             payload = task.get("payload", {})
-            print(f"[ORCHESTRATOR] Running background task: {task_type} (Agent: {agent.domain})")
-            
+            print(
+                f"[ORCHESTRATOR] Running background task: {task_type} "
+                f"(Agent: {agent.domain})"
+            )
             try:
-                # Delegate back to the agent for background processing if it has a method for it
                 if hasattr(agent, "execute_background_task"):
                     await agent.execute_background_task(task_type, payload, user_id)
                 else:

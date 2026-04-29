@@ -393,3 +393,588 @@ input:checked + .slider:before {
   font-size: 0.9rem;
   letter-spacing: 0.5px;
 }
+
+/* ============================================
+   TODO TAB STYLES
+   ============================================ */
+
+/* Stats Bar */
+.todo-stats-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 1rem 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.todo-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.todo-stat-value {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--text-main);
+  line-height: 1;
+}
+
+.todo-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 500;
+}
+
+.todo-stat-divider {
+  width: 1px;
+  height: 36px;
+  background: var(--glass-border);
+}
+
+/* Add Form */
+.todo-add-form {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  animation: fadeIn 0.25s ease;
+}
+
+.todo-input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  color: var(--text-main);
+  font-size: 1rem;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.todo-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.todo-input::placeholder {
+  color: var(--text-muted);
+}
+
+.todo-form-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.todo-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1;
+  min-width: 140px;
+}
+
+.todo-form-field label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.todo-date-input,
+.todo-select {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-main);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.todo-date-input:focus,
+.todo-select:focus {
+  border-color: var(--primary);
+}
+
+.todo-select option {
+  background: #1e293b;
+  color: var(--text-main);
+}
+
+/* Date Groups */
+.todo-date-group {
+  margin-bottom: 0.5rem;
+}
+
+.todo-date-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.todo-date-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.todo-date-label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.todo-date-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Todo Items */
+.todo-items {
+  padding: 0.5rem 0 0.5rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  animation: fadeIn 0.2s ease;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.todo-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  transform: translateX(4px);
+}
+
+.todo-item.completed {
+  opacity: 0.5;
+}
+
+.todo-item.completed .todo-title {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* Checkbox Button */
+.todo-check-btn {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  border-radius: 7px;
+  border: 2px solid;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  padding: 0;
+}
+
+.todo-check-btn:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.3);
+}
+
+/* Content */
+.todo-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.todo-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todo-meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.todo-priority-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.todo-category-badge {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  text-transform: capitalize;
+}
+
+.todo-time {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+/* Delete Button */
+.todo-delete-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+}
+
+.todo-item:hover .todo-delete-btn {
+  opacity: 1;
+}
+
+.todo-delete-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .todo-stats-bar {
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+  }
+  .todo-stat-value {
+    font-size: 1.25rem;
+  }
+  .todo-form-row {
+    flex-direction: column;
+  }
+  .todo-form-field {
+    min-width: 100%;
+  }
+}
+
+/* Todo action button (reopen) */
+.todo-action-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  opacity: 0;
+  display: flex;
+  align-items: center;
+}
+
+.todo-item:hover .todo-action-btn {
+  opacity: 1;
+}
+
+.todo-action-btn:hover {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+}
+
+/* ============================================
+   CALENDAR DAY-VIEW STYLES
+   ============================================ */
+
+.cal-connected-badge {
+  font-size: 0.8rem;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
+/* Week Strip */
+.cal-week-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.cal-nav-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.35rem;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+}
+
+.cal-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+}
+
+.cal-week-days {
+  display: flex;
+  flex: 1;
+  justify-content: space-around;
+}
+
+.cal-day-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: none;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  min-width: 52px;
+}
+
+.cal-day-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cal-day-name {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+.cal-day-num {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1;
+}
+
+.cal-day-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--primary);
+  margin-top: 0.1rem;
+}
+
+.cal-day-btn.today .cal-day-num {
+  color: var(--primary);
+}
+
+.cal-day-btn.today .cal-day-name {
+  color: var(--primary);
+}
+
+.cal-day-btn.selected {
+  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  box-shadow: 0 4px 16px var(--primary-glow);
+}
+
+.cal-day-btn.selected .cal-day-name,
+.cal-day-btn.selected .cal-day-num {
+  color: white;
+}
+
+.cal-day-btn.selected .cal-day-dot {
+  background: white;
+}
+
+/* Timeline */
+.cal-timeline-container {
+  flex: 1;
+  overflow-y: auto;
+  margin-top: 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--glass-border) transparent;
+}
+
+.cal-timeline-container::-webkit-scrollbar {
+  width: 6px;
+}
+.cal-timeline-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cal-timeline-container::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+  border-radius: 10px;
+}
+
+.cal-timeline {
+  position: relative;
+  min-height: 1440px; /* 24 * 60px per hour */
+}
+
+.cal-hour-row {
+  display: flex;
+  height: 60px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.cal-hour-label {
+  width: 60px;
+  min-width: 60px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding-top: 0;
+  text-align: right;
+  padding-right: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  transform: translateY(-8px);
+}
+
+.cal-hour-slot {
+  flex: 1;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  position: relative;
+}
+
+/* Current time indicator */
+.cal-now-line {
+  position: absolute;
+  left: 52px;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.cal-now-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+  flex-shrink: 0;
+  margin-left: -5px;
+}
+
+.cal-now-rule {
+  height: 2px;
+  flex: 1;
+  background: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+
+/* Event Blocks */
+.cal-event-block {
+  position: absolute;
+  left: 68px;
+  right: 12px;
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  overflow: hidden;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.cal-event-block:hover {
+  transform: translateX(2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 15;
+}
+
+.cal-event-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-event-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.cal-event-location {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  opacity: 0.8;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .cal-day-btn {
+    min-width: 40px;
+    padding: 0.4rem 0.5rem;
+  }
+  .cal-day-num {
+    font-size: 1rem;
+  }
+  .cal-hour-label {
+    width: 44px;
+    min-width: 44px;
+    font-size: 0.65rem;
+  }
+  .cal-event-block {
+    left: 50px;
+    right: 6px;
+  }
+  .cal-now-line {
+    left: 38px;
+  }
+}
