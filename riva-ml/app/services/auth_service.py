@@ -10,14 +10,24 @@ load_dotenv()
 
 # Initialize Firebase Admin SDK (supports both local file and env variable)
 try:
-    # Check for environment variable first (for cloud deployment)
-    firebase_creds_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    # Check for environment variable first (for cloud deployment like Railway)
+    # Using FIREBASE_CONFIG as the variable name
+    firebase_creds_json = os.getenv("FIREBASE_CONFIG") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
     
     if firebase_creds_json:
         # Parse JSON from environment variable
-        cred_dict = json.loads(firebase_creds_json)
-        cred = credentials.Certificate(cred_dict)
-        print("[OK] Firebase initialized from environment variable")
+        try:
+            cred_dict = json.loads(firebase_creds_json)
+            # Handle potential \n issues in private_key
+            if "private_key" in cred_dict:
+                cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
+            cred = credentials.Certificate(cred_dict)
+            print("[OK] Firebase initialized from environment variable")
+        except Exception as json_err:
+            print(f"[ERROR] Failed to parse FIREBASE_CONFIG JSON: {json_err}")
+            # Fall back to local file if JSON parsing fails
+            cred = credentials.Certificate("firebase_key.json")
+            print("[OK] Falling back to local firebase_key.json")
     else:
         # Fall back to local file (for local development)
         cred = credentials.Certificate("firebase_key.json")
