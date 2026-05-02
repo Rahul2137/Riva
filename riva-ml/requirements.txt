@@ -23,6 +23,7 @@ google-api-python-client==2.163.0
 google-auth==2.38.0
 google-auth-oauthlib==1.2.1
 google-cloud-texttospeech==2.25.0
+google-genai
 
 # Speech Recognition
 SpeechRecognition==3.14.1
