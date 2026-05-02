@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: riva-backend
+    runtime: python
+    region: singapore  # Closest to India for low latency
+    plan: free
+    rootDir: riva-ml
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd app && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: MONGO_URI
+        sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11"

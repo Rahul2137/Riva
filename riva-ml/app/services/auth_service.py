@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime
 from typing import Optional, Dict
 from firebase_admin import credentials, auth, initialize_app
@@ -7,11 +8,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize Firebase Admin SDK
+# Initialize Firebase Admin SDK (supports both local file and env variable)
 try:
-    cred = credentials.Certificate("firebase_key.json")
+    # Check for environment variable first (for cloud deployment)
+    firebase_creds_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    
+    if firebase_creds_json:
+        # Parse JSON from environment variable
+        cred_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(cred_dict)
+        print("[OK] Firebase initialized from environment variable")
+    else:
+        # Fall back to local file (for local development)
+        cred = credentials.Certificate("firebase_key.json")
+        print("[OK] Firebase initialized from local file")
+    
     initialize_app(cred)
-    print("[OK] Firebase Admin SDK initialized")
+    print("[OK] Firebase Admin SDK ready")
 except Exception as e:
     print(f"[WARNING] Firebase Admin init warning: {e}")
 

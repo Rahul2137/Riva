@@ -2,7 +2,7 @@ from pydantic import BaseModel
 from typing import List, Dict
 from openai import OpenAI
 import os
-from .UserModel import UserContextCache
+from models.user.user_model import UserContextCache
 
 # -----------------------------
 # Pydantic response schema

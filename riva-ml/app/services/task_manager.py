@@ -1,10 +1,12 @@
+"""
+Task Manager - Handles task scheduling and productivity features.
+TTS/STT is handled by frontend.
+"""
 import pickle
 import os
 from datetime import datetime, timedelta
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-import pyttsx3
-import speech_recognition as sr
 from openai import OpenAI
 import json
 import pytz
@@ -44,7 +46,11 @@ def authenticate_user():
     Try local-server OAuth first. If binding to a local port fails (PermissionError,
     OSError) fall back to a dynamic port or to console-based auth.
     """
-    flow = InstalledAppFlow.from_client_secrets_file("C:/Users/rkrau/OneDrive/Desktop/Riva_final/riva-ml/riva-ml/app/services/client_secret.json", SCOPES, redirect_uri="http://localhost:8000/")
+    flow = InstalledAppFlow.from_client_secrets_file(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client_secret.json"),
+        SCOPES,
+        redirect_uri="http://localhost:8000/"
+    )
     creds = None
 
     # 1) Preferred: bind to localhost on a fixed port
@@ -134,6 +140,9 @@ class TaskManager:
 
     def process_request(self, client, user_prompt):
         """Calls OpenAI API to update the user's schedule, context, and interact with the calendar."""
+        # TODO: Remove this fallback once Google Calendar integration is properly configured
+        return "Task scheduling and calendar features are coming soon! For now, I can help you track expenses or have a conversation."
+        
         messages = [ 
             {
                 "role": "system",
@@ -168,39 +177,3 @@ class TaskManager:
         else:
             return "Error updating schedule."
 
-def speak(text):
-    """Converts text to speech."""
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
-
-def listen():
-    """Listens to the user's voice input and converts it to text."""
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Listening...")
-        try:
-            audio = recognizer.listen(source)
-            return recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            return "Sorry, I didn't catch that."
-        except sr.RequestError:
-            return "Service unavailable."
-
-if __name__ == "__main__":
-    manager = TaskManager()
-    speak("Hello! How can I assist you today?")
-    
-    while True:
-        user_input = listen()
-        if user_input.lower() in ["exit", "quit", "bye"]:
-            speak("Goodbye!")
-            break
-        elif user_input == "Sorry, I didn't catch that.":
-            speak("Sorry, I didn't catch that. Can you repeat?")
-            continue
-        
-        print(f"You: {user_input}")
-        response = manager.process_request(client, user_input)
-        print(f"Response to user: {response}")
-        speak(response)
