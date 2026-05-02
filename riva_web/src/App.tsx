@@ -41,9 +41,18 @@ function App() {
   const pcmPlayerRef = useRef<PCMPlayer | null>(null);
   const isRivaPlayingRef = useRef(false); // mirror of isSpeaking without stale closure issues
   const bargeInSentRef = useRef(false);   // prevent duplicate barge_in signals per utterance
+  const bargeInTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rivaStoppedAtRef = useRef<number>(0);
+  const noiseFloorRef = useRef<number>(0.02); // adaptive ambient noise estimate
 
-  // Barge-in threshold: RMS above this while RIVA is speaking triggers interruption
-  const BARGE_IN_RMS = 0.04;
+  // ── Barge-in config (Adaptive VAD) ──────────────────────────────────
+  // Instead of a fixed threshold, we measure the ambient noise floor in real
+  // time and set the trigger relative to it. This works in quiet AND noisy rooms.
+  const BARGE_IN_MULTIPLIER = 3.5; // trigger at noise_floor × this
+  const BARGE_IN_MIN_RMS    = 0.045; // never trigger below this (truly silent rooms)
+  const BARGE_IN_MAX_RMS    = 0.20;  // cap so loud rooms don't make it impossible
+  const BARGE_IN_DEBOUNCE_MS = 80;   // must stay above threshold for this long
+  const BARGE_IN_COOLDOWN_MS = 250;  // ignore frames right after RIVA finishes
 
   // Auto-scroll chat
   useEffect(() => {
@@ -161,6 +170,13 @@ function App() {
       player.onPlaybackEnd = () => {
         isRivaPlayingRef.current = false;
         bargeInSentRef.current = false;
+        // Cancel any pending debounce timer when RIVA finishes
+        if (bargeInTimerRef.current) {
+          clearTimeout(bargeInTimerRef.current);
+          bargeInTimerRef.current = null;
+        }
+        // Record when RIVA stopped so we can apply a short cooldown
+        rivaStoppedAtRef.current = Date.now();
         setIsSpeaking(false);
       };
       pcmPlayerRef.current = player;
@@ -246,20 +262,62 @@ function App() {
     // If the user's mic level crosses the threshold while RIVA is speaking,
     // stop RIVA's audio immediately and tell Gemini the user is speaking.
     recorder.onRMSLevel = (rms: number) => {
+      // ── Phase 1: Update noise floor while RIVA is NOT speaking ──────
+      // Exponential moving average of ambient RMS — adapts to the room.
+      // α=0.02 means the floor updates slowly (won't spike on a single loud frame).
+      if (!isRivaPlayingRef.current) {
+        noiseFloorRef.current = noiseFloorRef.current * 0.98 + rms * 0.02;
+      }
+
+      // ── Phase 2: Barge-in detection while RIVA IS speaking ──────────
       if (
-        isLiveMode &&
-        isRivaPlayingRef.current &&
-        rms > BARGE_IN_RMS &&
-        !bargeInSentRef.current &&
-        wsRef.current?.readyState === WebSocket.OPEN
+        !isLiveMode ||
+        !isRivaPlayingRef.current ||
+        bargeInSentRef.current ||
+        wsRef.current?.readyState !== WebSocket.OPEN
       ) {
-        bargeInSentRef.current = true;
-        // Stop RIVA's current audio immediately
-        pcmPlayerRef.current?.interrupt();
-        isRivaPlayingRef.current = false;
-        setIsSpeaking(false);
-        // Signal backend → Gemini: user has started speaking
-        wsRef.current.send(JSON.stringify({ type: 'barge_in' }));
+        if (!isRivaPlayingRef.current && bargeInTimerRef.current) {
+          clearTimeout(bargeInTimerRef.current);
+          bargeInTimerRef.current = null;
+        }
+        return;
+      }
+
+      // Cooldown right after RIVA finishes to avoid pickup of last audio
+      if (Date.now() - rivaStoppedAtRef.current < BARGE_IN_COOLDOWN_MS) return;
+
+      // Adaptive threshold: noise_floor × multiplier, clamped to [min, max]
+      const adaptiveThreshold = Math.min(
+        BARGE_IN_MAX_RMS,
+        Math.max(BARGE_IN_MIN_RMS, noiseFloorRef.current * BARGE_IN_MULTIPLIER)
+      );
+
+      if (rms > adaptiveThreshold) {
+        if (!bargeInTimerRef.current) {
+          bargeInTimerRef.current = setTimeout(() => {
+            bargeInTimerRef.current = null;
+            if (
+              isRivaPlayingRef.current &&
+              !bargeInSentRef.current &&
+              wsRef.current?.readyState === WebSocket.OPEN
+            ) {
+              bargeInSentRef.current = true;
+              pcmPlayerRef.current?.interrupt();
+              isRivaPlayingRef.current = false;
+              setIsSpeaking(false);
+              wsRef.current.send(JSON.stringify({ type: 'barge_in' }));
+              console.log(
+                `[BARGE-IN] rms=${rms.toFixed(3)} threshold=${adaptiveThreshold.toFixed(3)} floor=${noiseFloorRef.current.toFixed(3)}`
+              );
+            }
+          }, BARGE_IN_DEBOUNCE_MS);
+        }
+      } else {
+        // Fell below threshold — cancel pending timer (transient noise spike)
+        if (bargeInTimerRef.current) {
+          clearTimeout(bargeInTimerRef.current);
+          bargeInTimerRef.current = null;
+        }
       }
     };
 

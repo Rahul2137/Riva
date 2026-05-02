@@ -57,9 +57,15 @@ class QueryBuilder:
         if date_range in ALLOWED_DATE_RANGES:
             date_filter = self._get_date_filter(date_range)
             if date_filter:
+                start_dt = date_filter["$gte"]
+                end_dt   = date_filter.get("$lte", datetime.now())
+                start_str = start_dt.strftime("%Y-%m-%d")
+                end_str   = end_dt.strftime("%Y-%m-%d")
                 query["$or"] = [
-                    {"created_at": date_filter},
-                    {"date": {"$gte": date_filter["$gte"].strftime("%Y-%m-%d")}}
+                    # Transactions saved as datetime in created_at
+                    {"created_at": {"$gte": start_dt, "$lte": end_dt}},
+                    # Transactions saved with string date field
+                    {"date": {"$gte": start_str, "$lte": end_str}},
                 ]
         
         # Amount filters
@@ -151,29 +157,36 @@ class QueryBuilder:
         
         if date_range == "today":
             start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end   = now.replace(hour=23, minute=59, second=59, microsecond=999999)
         elif date_range == "yesterday":
             start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end   = start.replace(hour=23, minute=59, second=59, microsecond=999999)
         elif date_range == "this_week":
-            start = now - timedelta(days=now.weekday())
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            end   = now
         elif date_range == "last_week":
-            start = now - timedelta(days=now.weekday() + 7)
-            start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = (now - timedelta(days=now.weekday() + 7)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end   = start + timedelta(days=6, hours=23, minutes=59, seconds=59)
         elif date_range == "this_month":
             start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end   = now
         elif date_range == "last_month":
-            first_of_month = now.replace(day=1)
-            start = (first_of_month - timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            first_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end   = first_this - timedelta(seconds=1)
+            start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         elif date_range == "last_30_days":
             start = now - timedelta(days=30)
+            end   = now
         elif date_range == "last_90_days":
             start = now - timedelta(days=90)
+            end   = now
         elif date_range == "all_time":
             return None
         else:
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)  # Default to this month
-        
-        return {"$gte": start}
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end   = now
+
+        return {"$gte": start, "$lte": end}
     
     def get_date_label(self, date_range: str) -> str:
         """Get human-readable label for date range."""

@@ -38,17 +38,20 @@ router = APIRouter(tags=["Gemini Live"])
 # ---------------------------------------------------------------------------
 # Tools that can be fire-and-forget (write operations)
 # ---------------------------------------------------------------------------
-BACKGROUND_TOOLS = {"add_expense", "update_event", "delete_event", "add_todo", "complete_todo", "delete_todo"}
+BACKGROUND_TOOLS = {"add_transaction", "update_event", "delete_event", "add_todo", "complete_todo", "delete_todo",
+                    "update_expense", "delete_expense"}
 
 # Immediate ACK messages sent to Gemini while the real work happens in background
 ACK_MESSAGES = {
-    "add_expense":    "recorded.",
-    "schedule_event": "scheduled.",
-    "update_event":   "updated.",
-    "delete_event":   "deleted.",
-    "add_todo":       "added to your list.",
-    "complete_todo":  "marked as done.",
-    "delete_todo":    "removed from your list.",
+    "add_transaction": "recorded.",
+    "schedule_event":  "scheduled.",
+    "update_event":    "updated.",
+    "delete_event":    "deleted.",
+    "add_todo":        "added to your list.",
+    "complete_todo":   "marked as done.",
+    "delete_todo":     "removed from your list.",
+    "update_expense":  "updated.",
+    "delete_expense":  "deleted.",
 }
 
 # Closing phrases that trigger conversation end
@@ -81,17 +84,31 @@ async def get_tools_and_handlers(user_id: str):
             "function_declarations": [
                 # ── Finance ──────────────────────────────────────────────
                 {
-                    "name": "add_expense",
-                    "description": "Record a new expense or income transaction.",
+                    "name": "add_transaction",
+                    "description": (
+                        "Record any financial transaction — expense, income, money lent to someone, "
+                        "or money borrowed. Always pass the correct transaction_type."
+                    ),
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
-                            "amount":      {"type": "NUMBER",  "description": "Transaction amount."},
-                            "category":    {"type": "STRING",  "description": "Category: food, transport, shopping, bills, entertainment, health, personal, other."},
-                            "description": {"type": "STRING",  "description": "Short description."},
-                            "date":        {"type": "STRING",  "description": "YYYY-MM-DD (optional, defaults to today)."},
+                            "transaction_type": {
+                                "type": "STRING",
+                                "description": (
+                                    "Type of transaction: "
+                                    "'expense' (money spent), "
+                                    "'income' (money received/salary/payment), "
+                                    "'lended' (money lent to someone), "
+                                    "'borrowed' (money borrowed from someone)."
+                                ),
+                            },
+                            "amount":      {"type": "NUMBER", "description": "Transaction amount in INR."},
+                            "category":    {"type": "STRING", "description": "Category: food, transport, shopping, bills, entertainment, health, personal, salary, investment, other."},
+                            "description": {"type": "STRING", "description": "Short description, e.g. 'lunch', 'Rahul borrowed ₹500', 'freelance payment'."},
+                            "date":        {"type": "STRING", "description": "YYYY-MM-DD (optional, defaults to today)."},
+                            "person":      {"type": "STRING", "description": "Name of person involved (only for lended/borrowed)."},
                         },
-                        "required": ["amount", "category"],
+                        "required": ["transaction_type", "amount", "category"],
                     },
                 },
                 {
@@ -103,6 +120,61 @@ async def get_tools_and_handlers(user_id: str):
                             "time_range": {"type": "STRING", "description": "today | this_week | this_month | last_month | all"},
                             "category":   {"type": "STRING", "description": "Filter by category (optional)."},
                         },
+                    },
+                },
+                {
+                    "name": "list_expenses",
+                    "description": "List recent expenses so the user can pick one to edit or delete. Returns expense IDs.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "days":     {"type": "NUMBER", "description": "How many days back to look (default 7)."},
+                            "category": {"type": "STRING", "description": "Filter by category (optional)."},
+                            "limit":    {"type": "NUMBER", "description": "Max number to return (default 10)."},
+                        },
+                    },
+                },
+                {
+                    "name": "update_expense",
+                    "description": "Update an existing expense. Call list_expenses first to get the expense_id.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "expense_id":  {"type": "STRING", "description": "MongoDB _id of the expense."},
+                            "amount":      {"type": "NUMBER", "description": "New amount (optional)."},
+                            "category":    {"type": "STRING", "description": "New category (optional)."},
+                            "description": {"type": "STRING", "description": "New description (optional)."},
+                            "date":        {"type": "STRING", "description": "New date YYYY-MM-DD (optional)."},
+                        },
+                        "required": ["expense_id"],
+                    },
+                },
+                {
+                    "name": "delete_expense",
+                    "description": "Permanently delete an expense. Call list_expenses first to confirm the expense_id.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "expense_id": {"type": "STRING", "description": "MongoDB _id of the expense to delete."},
+                        },
+                        "required": ["expense_id"],
+                    },
+                },
+                {
+                    "name": "get_budget_status",
+                    "description": "Get the user's budget limits vs current spending for this month.",
+                    "parameters": {"type": "OBJECT", "properties": {}},
+                },
+                {
+                    "name": "set_budget",
+                    "description": "Set or update the monthly budget limit for a spending category.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "category": {"type": "STRING", "description": "Category name: food, transport, shopping, bills, entertainment, health, personal, other."},
+                            "limit":    {"type": "NUMBER", "description": "Monthly spending limit in INR."},
+                        },
+                        "required": ["category", "limit"],
                     },
                 },
                 # ── Calendar ─────────────────────────────────────────────
@@ -227,34 +299,56 @@ async def get_tools_and_handlers(user_id: str):
     async def _execute_tool(name: str, args: Dict[str, Any]) -> Dict:
         context = {"user_id": user_id}
 
-        if name == "add_expense":
-            # Write DIRECTLY to MongoDB with structured Gemini args.
+        if name == "add_transaction":
             try:
                 from datetime import datetime as dt
+
+                # ── Type resolution ─────────────────────────────────────────
+                VALID_TYPES = {"expense", "income", "lended", "borrowed"}
+                tx_type = str(args.get("transaction_type", "expense")).lower().strip()
+                if tx_type not in VALID_TYPES:
+                    tx_type = "expense"  # safe default
+
+                # ── Category resolution ────────────────────────────────────
+                VALID_CATS = {
+                    "food", "transport", "shopping", "bills",
+                    "entertainment", "health", "personal",
+                    "salary", "investment", "other",
+                }
+                # Income-type transactions get a sensible default category
+                DEFAULT_CAT = {
+                    "income":   "salary",
+                    "lended":   "other",
+                    "borrowed": "other",
+                    "expense":  "other",
+                }
+                category = str(args.get("category", "")).lower().strip()
+                if not category or category not in VALID_CATS:
+                    category = DEFAULT_CAT.get(tx_type, "other")
+
                 amount   = float(args.get("amount", 0))
-                category = str(args.get("category", "other")).lower()
-                desc     = str(args.get("description", category))
+                desc     = str(args.get("description") or category)
                 date_str = args.get("date") or dt.now().strftime("%Y-%m-%d")
+                person   = args.get("person", "")  # for lended / borrowed
 
-                # Normalise category to valid values
-                valid = {"food","transport","shopping","bills","entertainment","health","personal","other"}
-                if category not in valid:
-                    category = "other"
-
-                await transactions_collection.insert_one({
+                doc = {
                     "user_id":     user_id,
-                    "type":        "expense",
+                    "type":        tx_type,
                     "amount":      amount,
                     "currency":    "INR",
                     "category":    category,
                     "description": desc,
                     "date":        date_str,
                     "created_at":  dt.utcnow(),
-                })
-                print(f"[GEMINI_LIVE][BG] add_expense written: ₹{amount} / {category} / {desc}")
-                return {"status": "success"}
+                }
+                if person:
+                    doc["person"] = person
+
+                await transactions_collection.insert_one(doc)
+                print(f"[GEMINI_LIVE][BG] add_transaction: {tx_type} ₹{amount} / {category} / {desc}")
+                return {"status": "success", "type": tx_type}
             except Exception as e:
-                print(f"[GEMINI_LIVE][BG] add_expense DB error: {e}")
+                print(f"[GEMINI_LIVE][BG] add_transaction error: {e}")
                 return {"status": "error", "message": str(e)}
 
         elif name == "query_spending":
@@ -436,6 +530,116 @@ async def get_tools_and_handlers(user_id: str):
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
+        elif name == "list_expenses":
+            from datetime import datetime as dt, timedelta
+            from bson import ObjectId
+            days    = int(args.get("days", 7))
+            limit   = int(args.get("limit", 10))
+            cat     = args.get("category", "").lower().strip() or None
+            start   = dt.utcnow() - timedelta(days=days)
+            q = {
+                "user_id": user_id,
+                "$or": [
+                    {"created_at": {"$gte": start}},
+                    {"date": {"$gte": start.strftime("%Y-%m-%d")}},
+                ],
+            }
+            if cat:
+                q["category"] = cat
+            cursor = transactions_collection.find(q).sort("created_at", -1).limit(limit)
+            docs = await cursor.to_list(length=limit)
+            items = []
+            for d in docs:
+                date_raw = d.get("date") or d.get("created_at", "")
+                date_str = date_raw.strftime("%Y-%m-%d") if hasattr(date_raw, "strftime") else str(date_raw)[:10]
+                items.append({
+                    "id":          str(d["_id"]),
+                    "amount":      d.get("amount"),
+                    "category":    d.get("category"),
+                    "description": d.get("description", ""),
+                    "date":        date_str,
+                })
+            return {"status": "success", "expenses": items, "count": len(items)}
+
+        elif name == "update_expense":
+            from bson import ObjectId
+            expense_id = args.get("expense_id", "")
+            try:
+                oid = ObjectId(expense_id)
+            except Exception:
+                return {"status": "error", "message": f"Invalid expense_id: {expense_id}"}
+
+            updates: Dict[str, Any] = {}
+            if "amount"      in args: updates["amount"]      = float(args["amount"])
+            if "category"    in args: updates["category"]    = str(args["category"]).lower()
+            if "description" in args: updates["description"] = str(args["description"])
+            if "date"        in args: updates["date"]        = str(args["date"])
+            if not updates:
+                return {"status": "error", "message": "No fields to update."}
+
+            from datetime import datetime as dt
+            updates["updated_at"] = dt.utcnow()
+            result = await transactions_collection.update_one(
+                {"_id": oid, "user_id": user_id},
+                {"$set": updates},
+            )
+            if result.matched_count == 0:
+                return {"status": "error", "message": "Expense not found — check the ID."}
+            print(f"[GEMINI_LIVE][BG] update_expense {expense_id}: {updates}")
+            return {"status": "success"}
+
+        elif name == "delete_expense":
+            from bson import ObjectId
+            expense_id = args.get("expense_id", "")
+            try:
+                oid = ObjectId(expense_id)
+            except Exception:
+                return {"status": "error", "message": f"Invalid expense_id: {expense_id}"}
+
+            result = await transactions_collection.delete_one({"_id": oid, "user_id": user_id})
+            if result.deleted_count == 0:
+                return {"status": "error", "message": "Expense not found — check the ID."}
+            print(f"[GEMINI_LIVE][BG] delete_expense {expense_id} done")
+            return {"status": "success"}
+
+        elif name == "get_budget_status":
+            from services.budget_service import BudgetService
+            from services.db import budgets_collection as bc
+            from datetime import datetime as dt
+            budget_svc = BudgetService(bc, transactions_collection)
+
+            # Get this month's spending by category
+            now = dt.utcnow()
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            pipeline = [
+                {"$match": {
+                    "user_id": user_id,
+                    "type": "expense",
+                    "$or": [
+                        {"created_at": {"$gte": start}},
+                        {"date": {"$gte": start.strftime("%Y-%m-%d")}},
+                    ],
+                }},
+                {"$group": {"_id": "$category", "total": {"$sum": "$amount"}}},
+            ]
+            cursor = transactions_collection.aggregate(pipeline)
+            rows = await cursor.to_list(length=50)
+            spending = {r["_id"]: r["total"] for r in rows}
+            status = await budget_svc.get_budget_status(user_id, spending)
+            return {"status": "success", "budget_status": status}
+
+        elif name == "set_budget":
+            from services.budget_service import BudgetService
+            from services.db import budgets_collection as bc
+            budget_svc = BudgetService(bc, transactions_collection)
+            category = str(args.get("category", "other")).lower()
+            limit    = float(args.get("limit", 0))
+            if limit <= 0:
+                return {"status": "error", "message": "Budget limit must be greater than 0."}
+            await budget_svc.set_category_budget(user_id, category, limit)
+            print(f"[GEMINI_LIVE] set_budget {category}=₹{limit}")
+            return {"status": "success", "category": category, "limit": limit}
+
         elif name == "end_conversation":
             return {"status": "end_conversation"}
 
@@ -509,19 +713,36 @@ TO-DO vs CALENDAR (critical distinction):
 - When adding a task, check schedule context to suggest a good time if relevant.
 - When listing tasks, mention overlapping calendar events.
 
+TRANSACTION MANAGEMENT (add_transaction tool):
+- Use add_transaction for ALL money movements — expense, income, lended, borrowed.
+- ALWAYS pass the correct transaction_type:
+    expense  → user spent money (food, shopping, bills, etc.)
+    income   → user received money (salary, freelance, gift, refund)
+    lended   → user gave money to someone ("I gave Rahul ₹500")
+    borrowed → user received money as a loan ("I borrowed ₹1000 from mom")
+- For lended/borrowed, also pass person="<name>" when mentioned.
+- To update or delete a transaction: call list_expenses first to find the ID, then update_expense or delete_expense.
+- Example: "I paid ₹200 for lunch" → add_transaction(transaction_type="expense", amount=200, category="food", description="lunch")
+- Example: "I got my salary ₹50000" → add_transaction(transaction_type="income", amount=50000, category="salary", description="salary")
+- Example: "I lent Rahul ₹500" → add_transaction(transaction_type="lended", amount=500, category="other", description="lent to Rahul", person="Rahul")
+
+BUDGET TOOLS:
+- get_budget_status → shows this month's spending vs limits. Call proactively after any large expense.
+- set_budget → sets a monthly limit for a category. E.g. user says "set food budget to 8000".
+- After recording an expense: if that category is at warning/over, mention it in one sentence.
+
 TOOL BEHAVIOUR:
 - For write operations: confirm in ONE short sentence. Never repeat back all the details.
 - For query results (spending, events, tasks): give the key numbers/names directly, no filler.
 - status=error: briefly tell the user what went wrong.
 - status=conflict: name the conflicting event and ask what to do.
-- For update/delete: call list_events or list_todos first to get the ID, then act.
+- For update/delete: call list_* first to get the ID, then act.
 - You may call multiple tools in one turn when needed.
 - If the user says bye/goodbye: say a brief farewell and call end_conversation.
 
 PROACTIVE BEHAVIOUR:
-- After completing a task action, if the user's day looks busy, mention it briefly.
+- After any expense, call get_budget_status if the category might be near its limit.
 - After adding a todo, if there's a free slot on the calendar, suggest using it.
-- After logging spending, if they're near a budget limit, mention it in one sentence.
 - Keep proactive additions to ≤1 sentence — don't overwhelm.
 """
 
