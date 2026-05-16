@@ -17,7 +17,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 # Constants
 GOOGLE_CLIENT_ID = os.getenv("client_id")
 GOOGLE_CLIENT_SECRET = os.getenv("client_secret")
-REDIRECT_URI = "http://localhost:8000/auth/callback"
+REDIRECT_URI = "https://riva-production.up.railway.app/auth/callback"
 
 
 # --- Pydantic Models ---
