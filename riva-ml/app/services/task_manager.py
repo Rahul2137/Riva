@@ -49,7 +49,7 @@ def authenticate_user():
     flow = InstalledAppFlow.from_client_secrets_file(
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client_secret.json"),
         SCOPES,
-        redirect_uri="http://localhost:8000/"
+        redirect_uri="https://riva-production.up.railway.app/"
     )
     creds = None
 
